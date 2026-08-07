@@ -11,6 +11,9 @@ Notes and deep-dives on LLM inference engines, kernels, and serving on AMD Insti
 - [`mla_decode_fwd` — absorbed-MLA assembly decode kernel](docs/mla-decode-kernel.md) — the 576-dim latent, matrix absorption math, and why decode is bandwidth-bound.
 - [MORI — the multi-node MoE collective](docs/mori-moe-collective.md) — dispatch/combine all-to-all for expert parallelism, prefill vs decode modes, KV traffic.
 - [MXFP4 weight loading in ATOM](docs/mxfp4-weight-loading.md) — OCP microscaling FP4, `load_model_in_plugin_mode()`, and the AITER GEMM dequant path.
+- [`ROCM_AITER_FA` — MHA 3-path routing](docs/rocm-aiter-fa-3path.md) — batch reordering to `[decode:extend:prefill]`, per-phase kernels, LSE merge, shuffled KV cache.
+- [CUDA-graph `FULL_AND_PIECEWISE` capture](docs/cuda-graph-capture.md) — full vs piecewise HIP-graph capture, persistent metadata buffers, `torch.compile` interaction.
+- [Disaggregated prefill / decode](docs/disaggregated-prefill-decode.md) — separate GPU pools per phase, KV handoff/transfer, independent scaling & trade-offs.
 
 ## TL;DR — ATOM vs vLLM
 
