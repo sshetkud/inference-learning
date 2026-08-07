@@ -6,6 +6,12 @@ Notes and deep-dives on LLM inference engines, kernels, and serving on AMD Insti
 
 - [AMD ATOM vs vLLM — architecture & kernels](docs/atom-vs-vllm.md) — how AMD's ATOM engine and vLLM differ in architecture and the kernel layer, and how they combine (ATOM as a vLLM plugin backend on top of AITER).
 
+### Kernel / systems deep-dives
+
+- [`mla_decode_fwd` — absorbed-MLA assembly decode kernel](docs/mla-decode-kernel.md) — the 576-dim latent, matrix absorption math, and why decode is bandwidth-bound.
+- [MORI — the multi-node MoE collective](docs/mori-moe-collective.md) — dispatch/combine all-to-all for expert parallelism, prefill vs decode modes, KV traffic.
+- [MXFP4 weight loading in ATOM](docs/mxfp4-weight-loading.md) — OCP microscaling FP4, `load_model_in_plugin_mode()`, and the AITER GEMM dequant path.
+
 ## TL;DR — ATOM vs vLLM
 
 ATOM and vLLM are **not** competing engines doing the same job; they live at different layers and are often used together.
