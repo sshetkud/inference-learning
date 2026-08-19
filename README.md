@@ -8,6 +8,7 @@ Notes and deep-dives on LLM inference engines, kernels, and serving on AMD Insti
 
 ### Kernel / systems deep-dives
 
+- [MHA vs MLA — attention mechanisms compared](docs/mha-vs-mla.md) — full multi-head attention vs DeepSeek's latent attention, KV-cache math, and why MLA cuts cache ~57× with no quality loss.
 - [`mla_decode_fwd` — absorbed-MLA assembly decode kernel](docs/mla-decode-kernel.md) — the 576-dim latent, matrix absorption math, and why decode is bandwidth-bound.
 - [MORI — the multi-node MoE collective](docs/mori-moe-collective.md) — dispatch/combine all-to-all for expert parallelism, prefill vs decode modes, KV traffic.
 - [MXFP4 weight loading in ATOM](docs/mxfp4-weight-loading.md) — OCP microscaling FP4, `load_model_in_plugin_mode()`, and the AITER GEMM dequant path.
