@@ -104,3 +104,52 @@ srun --jobid=<JID> --overlap -N1 -w <node> bash -lc 'sudo docker exec <container
 ---
 
 See also: [multinode-vllm-ray.md](multinode-vllm-ray.md) for the exact sbatch + Ray launcher scripts used to run the 8-node job.
+
+---
+
+## Checking weight-load progress (multi-node vLLM)
+
+The weight-load progress is the `Loading safetensors checkpoint shards: NN% Completed | X/96`
+line in the vLLM serve log.
+
+### Quickest — one-shot latest progress
+
+From the controller `smc200x`:
+
+```bash
+grep -a 'Loading safetensors checkpoint shards' \
+  /mnt/dcgpuval/afde/sshetkud/kimi-k3-bench/vllm_serve_<JID>.log | tail -1
+```
+
+That prints the newest line, e.g. `... 17% Completed | 16/96 [09:56<46:13, 34.67s/it]` — the
+`16/96` is shards loaded, and `46:13` is the ETA remaining for that worker.
+
+### Live follow
+
+```bash
+tail -f /mnt/dcgpuval/afde/sshetkud/kimi-k3-bench/vllm_serve_<JID>.log \
+  | grep --line-buffered 'Loading safetensors'
+```
+
+### What the numbers mean
+
+- `X/96` — this pipeline stage loads **96 shards**; each PP rank (one per node) loads its own set.
+  The head logs `Worker_PP0_TP0` (rank 0). Progress ≈ overall load progress.
+- `34–42 s/it` — seconds per shard; total load ≈ `96 × ~35 s ≈ 50 min`.
+- When it hits `100% Completed`, the next milestones are KV-cache alloc → CUDA-graph capture →
+  `Application startup complete` / `Uvicorn running` → `/health` returns 200.
+
+### Check the finish / next stage
+
+```bash
+grep -aE '100% Completed|Application startup complete|Uvicorn running|GPU KV cache|Capturing|server ready' \
+  /mnt/dcgpuval/afde/sshetkud/kimi-k3-bench/vllm_serve_<JID>.log | tail
+```
+
+### Optional — is it done serving yet?
+
+```bash
+# health via the driver log, or check the flag/bench dir
+grep -a 'server ready' /mnt/dcgpuval/afde/sshetkud/kimi-k3-vllm-8n-<JID>.log
+ls /mnt/dcgpuval/afde/sshetkud/kimi-k3-bench/vllm8n_bench_<JID>/ 2>/dev/null
+```
