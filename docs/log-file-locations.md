@@ -100,3 +100,7 @@ sacct -j <JID> --format=JobID,JobName%18,State,Elapsed,ExitCode
 # live logs from inside a container on a compute node (compute nodes are not SSH-able directly)
 srun --jobid=<JID> --overlap -N1 -w <node> bash -lc 'sudo docker exec <container> ray status'
 ```
+
+---
+
+See also: [multinode-vllm-ray.md](multinode-vllm-ray.md) for the exact sbatch + Ray launcher scripts used to run the 8-node job.
