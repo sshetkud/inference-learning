@@ -129,6 +129,268 @@ one logical engine spans nodes.
 
 ---
 
+## Ray in more detail — distributed process manager
+
+If by “mode on Ray” you mean “explain Ray in more detail”, the easiest way is to think of
+Ray as a **distributed process manager**.
+
+### 1. What problem does Ray solve?
+
+Imagine you have:
+
+```
+4 nodes × 8 GPUs/node = 32 GPUs total
+```
+
+Your vLLM model needs all 32 GPUs. You need to:
+
+- Start vLLM workers on all 4 nodes
+- Assign the correct GPU to each worker
+- Make workers discover each other
+- Coordinate execution
+- Keep track of which resources are available
+- Restart / manage workers if needed
+
+Ray helps with these distributed tasks.
+
+### 2. Ray head node and worker nodes
+
+A Ray cluster typically looks like:
+
+```
+                 Ray Head Node
+                ┌──────────────┐
+                │ Ray Head     │
+                │ Scheduler    │
+                │ Ray services │
+                └──────┬───────┘
+                       │
+             ┌─────────┼─────────┐
+             │         │         │
+             ↓         ↓         ↓
+          Node 1     Node 2    Node 3
+          Worker     Worker    Worker
+          8 GPUs     8 GPUs    8 GPUs
+```
+
+The **head node** coordinates the Ray cluster (GCS on port **6379** in our Kimi-K3 runbook).
+**Worker nodes** provide compute resources and join the head.
+
+### 3. What happens when vLLM uses Ray?
+
+Suppose:
+
+```
+Model needs 16 GPUs
+2 nodes × 8 GPUs
+```
+
+You start your Ray cluster. Then vLLM creates workers:
+
+```
+Node 1                  Node 2
+GPU0 → vLLM Worker 0    GPU0 → vLLM Worker 8
+GPU1 → vLLM Worker 1    GPU1 → vLLM Worker 9
+GPU2 → vLLM Worker 2    GPU2 → vLLM Worker 10
+GPU3 → vLLM Worker 3    GPU3 → vLLM Worker 11
+GPU4 → vLLM Worker 4    GPU4 → vLLM Worker 12
+GPU5 → vLLM Worker 5    GPU5 → vLLM Worker 13
+GPU6 → vLLM Worker 6    GPU6 → vLLM Worker 14
+GPU7 → vLLM Worker 7    GPU7 → vLLM Worker 15
+```
+
+Ray helps vLLM **place** those workers on the available nodes/GPUs.
+
+### 4. Ray is NOT the GPU communication layer
+
+This is very important for AMD MI355X testing. The full stack:
+
+```
+                vLLM
+                  │
+             distributed
+              workers
+                  │
+                Ray
+          ┌───────┴────────┐
+          │                │
+       Worker 0         Worker 15
+          │                │
+       PyTorch            PyTorch
+          │                │
+        RCCL              RCCL
+          │                │
+       ┌──┴────────────────┴──┐
+       │                       │
+      ICI                    NIC/RoCE
+       │                       │
+     GPU ↔ GPU              Node ↔ Node
+```
+
+| Layer | Handles |
+|-------|---------|
+| **Ray** | “Where should this worker run?” · “Is GPU available?” · “Start this process.” · “Which node is worker 5 on?” |
+| **RCCL** | GPU 0 ←→ GPU 1 · GPU 8 ←→ GPU 9 · collectives across ranks |
+| **NIC / ICI** | Node 1 GPU → NIC → network → NIC → Node 2 GPU (IONIC/RoCE on r16) |
+
+That's where your **IONIC / RoCE / RCCL** stack becomes important — not Ray.
+
+### 5. Ray actors
+
+One important Ray concept is an **Actor** — a long-running process that Ray manages:
+
+```
+Ray
+ │
+ ├── Actor 0 → GPU 0
+ ├── Actor 1 → GPU 1
+ ├── Actor 2 → GPU 2
+ └── Actor 3 → GPU 3
+```
+
+For vLLM, distributed workers are processes managed through the execution framework.
+Instead of manually:
+
+```bash
+ssh node1 ...
+ssh node2 ...
+ssh node3 ...
+```
+
+Ray handles much of that distributed process management (especially when launched inside
+a Slurm allocation via `srun` per node).
+
+### 6. Ray resources and scheduling
+
+Ray keeps track of resources per node:
+
+```
+Node 1:  GPU = 8,  CPU = 128
+Node 2:  GPU = 8,  CPU = 128
+         ─────────────────────
+Cluster: GPU = 16, CPU = 256
+```
+
+When an application asks for **8 GPUs**, Ray finds where those resources are available.
+This is **resource scheduling**.
+
+### 7. Why Ray can matter for vLLM performance (benchmarking)
+
+Suppose you run on **8 GPUs** and get **10,000 tokens/sec**. You move to **16 GPUs** and
+expect **20,000 tokens/sec** but get **14,000 tokens/sec**.
+
+The problem may **not** be Ray. Separate the layers:
+
+```
+Ray overhead
+      ↓
+Worker startup / scheduling
+      ↓
+vLLM
+      ↓
+GPU computation
+      ↓
+RCCL communication
+      ↓
+NIC / network
+```
+
+For a **long-running inference server**, Ray startup overhead usually fades after workers
+are up. But **worker placement** and **distributed execution setup** can still affect the
+system — profile RCCL and network before blaming Ray.
+
+### 8. Ray vs Slurm
+
+Since you're on Conductor/Slurm, this distinction matters:
+
+**Slurm** decides: *“Which nodes are allocated to your job?”*
+
+```
+Job 1234 → Node 1, Node 2, Node 3, Node 4
+```
+
+**Ray** operates **inside** that allocation and manages distributed application processes:
+
+```
+             Slurm
+               │
+        Allocates 4 nodes
+               │
+       ┌───────┴───────┐
+       │               │
+     Node 1           Node 4
+       │               │
+       └───────┬───────┘
+               │
+              Ray
+               │
+        ┌──────┼──────┐
+        ↓      ↓      ↓
+      vLLM   vLLM   vLLM
+     worker worker worker
+```
+
+| Layer | Responsibility |
+|-------|----------------|
+| **Slurm** | Cluster / job allocation |
+| **Ray** | Distributed application orchestration |
+| **vLLM** | Inference |
+| **RCCL** | GPU communication |
+
+### 9. Ray vs Kubernetes (and Slurm)
+
+| Technology | Main responsibility |
+|------------|---------------------|
+| **Slurm** | HPC job / resource scheduling |
+| **Kubernetes** | Container / pod orchestration |
+| **Ray** | Distributed application execution |
+| **vLLM** | LLM inference |
+| **RCCL** | GPU collective communication |
+
+You can stack them:
+
+```
+Kubernetes → Ray → vLLM → RCCL → AMD GPUs
+```
+
+or (our lab):
+
+```
+Slurm → Ray → vLLM → RCCL → MI355X
+```
+
+### 10. The simplest way to remember Ray
+
+Think of Ray as the **“traffic controller for distributed application processes.”**
+
+```
+             SLURM
+        "Here are your nodes"
+                 │
+                 ↓
+               RAY
+       "I'll manage the workers"
+                 │
+                 ↓
+              vLLM
+       "I'll run the model"
+                 │
+                 ↓
+              RCCL
+       "I'll move data between
+          GPUs efficiently"
+                 │
+                 ↓
+          MI355 / MI300X
+```
+
+For multi-node vLLM testing, the most important question is often: **do you actually need
+Ray?** For some multi-node configurations (one engine spanning nodes with TP/PP), Ray is
+required (`--distributed-executor-backend ray`). For others — **replicas + nginx** or
+vLLM **native DP** — you can avoid Ray entirely. See [Lab patterns compared](#lab-patterns-compared) below.
+
+---
+
 ## Slurm vs Ray: who does what?
 
 They solve **different problems**. You need both only when a **single vLLM engine**
