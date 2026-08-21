@@ -1,30 +1,190 @@
-# Multi-node vLLM on Ray (Kimi-K3, 8×MI355X, TP×PP)
+# Multi-node vLLM, Slurm, and Ray
 
-How the multi-node vLLM Kimi-K3 job was run: a single model sharded across **8 nodes ×
-8 GPUs = 64 GPUs** (tensor-parallel **TP=8** within a node, pipeline-parallel **PP=8**
-across nodes) using a **Ray** cluster, submitted via Slurm on
-`sshetkud@smc200x-ccs-e12-31.cs-aus.dcgpu`.
+How **Slurm**, **Ray**, and **vLLM** fit together for distributed inference on AMD MI355X
+clusters — plus the **Kimi-K3 8-node (TP×PP)** runbook we used on Conductor.
 
-Log/result locations for this job are in [log-file-locations.md](log-file-locations.md).
+Related docs: [log-file-locations.md](log-file-locations.md),
+[vllm-grafana-architecture.md](vllm-grafana-architecture.md),
+[atom-vs-vllm.md](atom-vs-vllm.md).
+
+Official vLLM reference: [Parallelism and Scaling](https://docs.vllm.ai/en/stable/serving/parallelism_scaling/).
 
 ---
 
-## Topology & key facts
+## Slurm vs Ray: who does what?
+
+They solve **different problems**. You need both only when a **single vLLM engine**
+must span multiple nodes (tensor parallel and/or pipeline parallel across nodes).
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Slurm  — resource manager                                  │
+│  • Allocates N nodes, GPUs, walltime                        │
+│  • Exclusive reservation (--exclusive)                      │
+│  • Does NOT start cross-node vLLM worker processes          │
+└──────────────────────────┬──────────────────────────────────┘
+                           │ one sbatch job, all nodes
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Ray  — process / runtime orchestrator (when needed)        │
+│  • Ray head on node 0 (GCS on :6379)                        │
+│  • Ray workers on other nodes join head                     │
+│  • Exposes cluster-wide GPU pool to vLLM                    │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│  vLLM  — inference engine                                   │
+│  • vllm serve --distributed-executor-backend ray              │
+│  • TP / PP workers placed by Ray across nodes               │
+│  • OpenAI API on head :8000                                 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+| Layer | Role | What it knows |
+|-------|------|----------------|
+| **Slurm** | Hardware allocation | "You have r16-06…r16-34, 8 GPUs each, 16 h" |
+| **Ray** | Cross-node process mesh | "64 GPUs at these IPs; start rank N here" |
+| **vLLM** | Model sharding + serving | "Layers 0–40 on ranks 0–63" |
+
+---
+
+## When is Ray required?
+
+vLLM supports two distributed executor backends:
+
+| Backend | Scope | When to use |
+|---------|--------|-------------|
+| **`multiprocessing` (`mp`)** | **Single node** | All GPUs on one box (default). Kimi-K3 single-node: **TP=8**, no Ray. |
+| **`ray`** | **Multi-node** | One logical engine whose **TP or PP spans nodes**. |
+
+### Ray **is** required when:
+
+- Model shards must live on **more than one node** (TP × PP > GPUs per node).
+- Example: 8 nodes × 8 GPUs, one engine → `TP=8`, `PP=8`, `--distributed-executor-backend ray`.
+
+### Ray is **not** required when:
+
+1. **Single-node serving** — Slurm allocates 1 node; `vllm serve --tensor-parallel-size 8` uses `mp`.
+2. **Multi-node replicas** — each node runs an **independent** engine; **nginx** load-balances
+   (best throughput when the model fits on one node).
+3. **vLLM native data-parallel** — head + headless worker containers rendezvous without Ray.
+
+**Rule of thumb:** Slurm gives you machines; Ray wires one distributed engine across them;
+replicas/nginx wire **many independent engines**.
+
+---
+
+## Ray components you need
+
+Inside **one Slurm job** (never split Ray and vLLM into separate Slurm jobs — GPU conflicts):
+
+| Component | Typical port | Purpose |
+|-----------|--------------|---------|
+| **Ray head (GCS)** | **6379** | Global control store; workers register here |
+| **Ray dashboard** | **8265** | Debug / cluster visibility |
+| **Ray client** | **10001** | Optional client connections |
+| **vLLM API** | **8000** | OpenAI-compatible HTTP on head |
+
+Head start (conceptual):
+
+```bash
+ray start --head \
+  --node-ip-address=<head_cluster_ip> \
+  --port=6379 \
+  --num-gpus=8 \
+  --dashboard-host=0.0.0.0 \
+  --disable-usage-stats
+```
+
+Worker start:
+
+```bash
+ray start --address=<head_cluster_ip>:6379 \
+  --num-gpus=8 \
+  --disable-usage-stats
+```
+
+Then **one** `vllm serve` on the head:
+
+```bash
+vllm serve /model_weights \
+  --tensor-parallel-size 8 \
+  --pipeline-parallel-size 8 \
+  --distributed-executor-backend ray \
+  --host 0.0.0.0 --port 8000
+```
+
+**Critical:** `--node-ip-address` / `VLLM_HOST_IP` must be the **cluster-routable**
+fabric IP (not localhost). For our r16 fleet that is `enp81s0f1` (10.194.134.0/22).
+
+---
+
+## Parallelism cheat sheet
+
+| Mode | Spans nodes? | Needs Ray? | Example |
+|------|--------------|------------|---------|
+| **TP** (tensor parallel) | Yes, if TP > GPUs/node | **Yes** | 64 GPUs, 8 nodes → TP=8, PP=8 |
+| **PP** (pipeline parallel) | Yes | **Yes** | Pipeline stages on different nodes |
+| **DP** (data parallel replicas) | Can | Often **no** | Independent copies; nginx or vLLM native DP |
+| **Single-node TP=8** | No | **No** | Kimi-K3 on one MI355X |
+
+Common multi-node pattern ([vLLM docs](https://docs.vllm.ai/en/stable/serving/parallelism_scaling/)):
+
+- `tensor_parallel_size` = GPUs **per node**
+- `pipeline_parallel_size` = **number of nodes**
+
+Alternative: `tensor_parallel_size` = total cluster GPUs (needs very fast interconnect).
+
+---
+
+## End-to-end flow (Slurm + Ray + vLLM)
+
+```
+1. sbatch          → Slurm reserves N nodes (ONE job)
+2. HEAD = first node in SLURM_NODELIST
+3. srun on head    → ray start --head --node-ip-address=<head_ip>
+4. srun on workers → ray start --address=<head_ip>:6379
+5. Wait            → ray status shows N×8 GPUs
+6. On head only    → vllm serve … --distributed-executor-backend ray
+7. Clients         → curl head:8000/v1/…
+```
+
+Slurm job skeleton:
+
+```bash
+#SBATCH -N 8
+#SBATCH --ntasks-per-node=1
+#SBATCH --gpus-per-node=8
+#SBATCH --exclusive
+```
+
+**Do not** start Ray in one Slurm job and vLLM in another — both will fight for GPUs.
+
+---
+
+## Kimi-K3 8-node run (TP=8 × PP=8, 64 GPUs)
+
+How the multi-node Kimi-K3 job was run: one model sharded across **8 nodes × 8 GPUs**
+using Ray, submitted via Slurm on `sshetkud@smc200x-ccs-e12-31.cs-aus.dcgpu`.
+
+### Topology & key facts
 
 - **Nodes:** `smci355-ccs-aus-r16-[06,10,14,18,22,26,30,34]` (partition `mi355x-r16`, `--exclusive`).
 - **Model:** `/data/afde/model/moonshotai/Kimi-K3` (node-local on all 8) → `/model_weights` in container.
-- **Image:** `vllm/vllm-openai-rocm:kimi-k3`. **Note:** this image ships **without Ray**, so the
-  launcher `pip install ray[default]` (v2.57.0, ~6.5 min) into each container at startup.
+- **Image:** `vllm/vllm-openai-rocm:kimi-k3`. **Note:** this image ships **without Ray**; the
+  launcher `pip install ray[default]` (v2.57.0, ~6–7 min) into each container at startup.
 - **Ray control plane:** interface `enp81s0f1` (10.194.134.0/22). Head = first node (r16-06);
   workers join `HEAD_IP:6379`. Head IP is shared via an NFS file; workers block until the head
   signals `DONE`.
-- **Collective comms:** `NCCL_SOCKET_IFNAME/GLOO_SOCKET_IFNAME=enp81s0f1`; RCCL uses the Pensando
-  `benic*` RDMA fabric for tensor traffic.
-- **Gotchas hit & fixed:** (1) image lacks Ray → pip-install in launcher; (2) stale VRAM from
-  leftover containers on a node fails vLLM's startup free-memory check → clean stale
-  `docker rm -f` / free VRAM on all nodes before submit.
+- **Collective comms:** `NCCL_SOCKET_IFNAME` / `GLOO_SOCKET_IFNAME=enp81s0f1`; RCCL uses the
+  Pensando `benic*` RDMA fabric for tensor traffic.
+- **Gotchas hit & fixed:**
+  1. Image lacks Ray → pip-install in launcher.
+  2. Stale VRAM from leftover containers fails vLLM's startup memory check →
+     `docker rm -f` / free VRAM on all nodes before submit.
 
-## How to run
+### How to run
 
 ```bash
 # from the controller, in the bench dir where both scripts live:
@@ -32,6 +192,19 @@ cd /mnt/dcgpuval/afde/sshetkud/kimi-k3-bench
 sbatch run_kimi_k3_vllm_8n_ray.sbatch
 # watch bring-up:
 tail -f /mnt/dcgpuval/afde/sshetkud/kimi-k3-vllm-8n-<JID>.log
+```
+
+### Pre-submit cleanup (avoid stale-VRAM failures)
+
+vLLM aborts at startup if a GPU isn't (nearly) empty
+(`Free memory on device … less than desired GPU memory utilization`).
+Clear leftover project containers / VRAM on all nodes first:
+
+```bash
+srun -p mi355x-r16 --nodelist=smci355-ccs-aus-r16-[06,10,14,18,22,26,30,34] \
+  -N8 --ntasks-per-node=1 -t 00:05:00 bash -lc '
+    sudo docker rm -f kimi_k3_ray kimi_k3 sglang_job atom_job 2>/dev/null || true
+    sudo pkill -9 -f "vllm|ray::|raylet|gcs_server|EngineCore" 2>/dev/null || true'
 ```
 
 ---
@@ -215,15 +388,36 @@ fi
 
 ---
 
-## Pre-submit cleanup (avoid stale-VRAM failures)
+## Lab patterns compared
 
-vLLM aborts at startup if a GPU isn't (nearly) empty
-(`Free memory on device cuda:N ... less than desired GPU memory utilization`).
-Clear leftover project containers / VRAM on all nodes first:
+| Pattern | Nodes | Ray? | How it scales |
+|---------|-------|------|----------------|
+| **Kimi-K3 single-node** (Grafana submit) | 1 | No | TP=8, `mp` backend |
+| **Kimi-K3 8n Ray** (this doc) | 8 | **Yes** | TP=8 × PP=8, one engine |
+| **vLLM-job replicas** | N | No | N independent engines + nginx LB |
+| **vLLM-job native DP** | N | No | Cross-node DP rendezvous |
 
-```bash
-srun -p mi355x-r16 --nodelist=smci355-ccs-aus-r16-[06,10,14,18,22,26,30,34] \
-  -N8 --ntasks-per-node=1 -t 00:05:00 bash -lc '
-    sudo docker rm -f kimi_k3_ray kimi_k3 sglang_job atom_job 2>/dev/null || true
-    sudo pkill -9 -f "vllm|ray::|raylet|gcs_server|EngineCore" 2>/dev/null || true'
-```
+For models that **fit on one MI355X node**, replicas + load balancer usually beats
+cross-node TP/PP over TCP for latency-sensitive serving.
+
+---
+
+## Networking & ops checklist
+
+- [ ] Head/worker IP on **fabric NIC** (`enp81s0f1` on r16), not management-only
+- [ ] Ports **6379** (Ray GCS) reachable node-to-node
+- [ ] `NCCL_SOCKET_IFNAME` / `GLOO_SOCKET_IFNAME` set consistently
+- [ ] Model weights visible on every node (node-local or NFS)
+- [ ] Stale containers cleared before submit
+- [ ] **One Slurm job** owns all nodes for the full Ray + vLLM lifetime
+- [ ] Cleanup: `ray stop` + `docker rm` when job ends
+
+Debug: Ray dashboard `:8265`, `ray status` on head, `vllm_serve_<JID>.log` on NFS.
+
+---
+
+## References
+
+- [vLLM Parallelism and Scaling](https://docs.vllm.ai/en/stable/serving/parallelism_scaling/)
+- [vLLM forum: multi-node DP with Slurm](https://discuss.vllm.ai/t/running-vllm-multi-node-data-parallel-with-slurm/1362)
+- [MeluXina: multi-node vLLM + Slurm + Ray](https://docs.lxp.lu/howto/llama3-vllm/)
