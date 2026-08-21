@@ -782,17 +782,61 @@ cross-node TP/PP over TCP for latency-sensitive serving.
 
 ---
 
-## Networking & ops checklist
+## Networking & ops checklist (when using Ray)
 
-- [ ] Head/worker IP on **fabric NIC** (`enp81s0f1` on r16), not management-only
-- [ ] Ports **6379** (Ray GCS) reachable node-to-node
-- [ ] `NCCL_SOCKET_IFNAME` / `GLOO_SOCKET_IFNAME` set consistently
-- [ ] Model weights visible on every node (node-local or NFS)
-- [ ] Stale containers cleared before submit
-- [ ] **One Slurm job** owns all nodes for the full Ray + vLLM lifetime
-- [ ] Cleanup: `ray stop` + `docker rm` when job ends
+- [ ] **Head IP:** routable between all Slurm nodes — use fabric NIC (`ip -o -4 addr show enp81s0f1`
+  on r16), **not** `hostname -I` on the wrong/management NIC
+- [ ] **Ports open node-to-node:**
+  - **6379** — Ray GCS (head)
+  - **8265** — Ray dashboard (optional, debug)
+  - **10001** — Ray client (if used)
+  - Ephemeral **worker ports** Ray picks per node
+  - **8000** — vLLM OpenAI API on head
+- [ ] **NCCL / RDMA (AMD):** set `NCCL_SOCKET_IFNAME` and `GLOO_SOCKET_IFNAME` to the
+  cluster-routable interface (e.g. `enp81s0f1` on r16); RCCL tensor traffic uses Pensando
+  `benic*` / IONIC — same env discipline as training runs
+- [ ] **ROCm / HSA:** match your working training RCCL env (`HSA_FORCE_FINE_GRAIN_PCIE`, etc.)
+  when debugging collectives
+- [ ] **Model on shared FS:** all nodes see the same weights (NFS e.g. `/mnt/dcgpuval/...` or
+  node-local copy on every node like Kimi-K3 8n)
+- [ ] **One Slurm job** owns all nodes for the full Ray + vLLM lifetime — do not split Ray and
+  vLLM across separate jobs
+- [ ] **Cleanup:** `ray stop` on all nodes + `docker rm -f` when the Slurm job ends
+- [ ] **Pre-submit:** clear stale containers / VRAM (`kimi_k3_ray`, `kimi_k3`, etc.) before submit
 
-Debug: Ray dashboard `:8265`, `ray status` on head, `vllm_serve_<JID>.log` on NFS.
+**Debug:**
+
+| What | Where |
+|------|--------|
+| Ray cluster state | `ray status` on head (inside container) |
+| Ray dashboard | `http://<head>:8265` |
+| vLLM serve log | `${RESULT_DIR}/vllm_serve_<JID>.log` on NFS |
+| Slurm job log | `/mnt/dcgpuval/afde/sshetkud/kimi-k3-vllm-8n-<JID>.log` |
+| GPU collectives | RCCL logs / `NCCL_DEBUG=INFO` (separate from Ray issues) |
+
+---
+
+## Short answer
+
+| Question | Answer |
+|----------|--------|
+| **Is Ray always needed with Slurm for multi-node vLLM?** | **No** — only when one vLLM engine must span nodes (TP/PP across nodes), or you use host-runtime with `--distributed-executor-backend ray`. |
+| **What does Slurm provide?** | Nodes, GPUs, time, exclusivity. |
+| **What does Ray provide?** | Cross-node process placement so vLLM can run distributed TP/PP as **one engine**. |
+| **What for Kimi-K3 on 1 node?** | **Slurm only** — no Ray (`TP=8`, `mp` backend). |
+| **What for throughput across many nodes (model fits on 1 node)?** | **Slurm + nginx replicas** or **vLLM native DP** — no Ray. |
+
+### Choosing TP, PP, Ray vs replicas
+
+| Target | Suggested approach |
+|--------|-------------------|
+| **Kimi-K3 on 1× MI355X** | 1 node, `TP=8`, no Ray — use Grafana submit or `run_kimi_k3_vllm*.sbatch` |
+| **Kimi-K3 on 2× MI355X (one engine)** | `TP=8`, `PP=2`, **Ray required**, `--distributed-executor-backend ray` |
+| **Kimi-K3 max throughput on 4+ nodes (fits 1 node)** | **Replicas + nginx** or vLLM DP — **no Ray**; better latency than cross-node TP/PP on TCP |
+| **Kimi-K3 8× MI355X (64 GPUs, one shard)** | `TP=8`, `PP=8`, **Ray** — see [Kimi-K3 8-node run](#kimi-k3-8-node-run-tp8--pp8-64-gpus) |
+
+If you specify a target (e.g. “Kimi-K3 on 2× MI355X” vs “max throughput on 4 nodes”), use the
+table above to pick **TP**, **PP**, and **Ray vs replicas** before submitting.
 
 ---
 
