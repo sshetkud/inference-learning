@@ -11,6 +11,124 @@ Official vLLM reference: [Parallelism and Scaling](https://docs.vllm.ai/en/stabl
 
 ---
 
+## What is Ray in vLLM?
+
+In vLLM, **Ray** is a distributed computing framework that manages and coordinates
+multiple GPUs and nodes when running large-model inference. Think of it as the
+**orchestration layer** between your vLLM processes and the cluster resources.
+
+### Simple picture
+
+**Single GPU:**
+
+```
+Client
+  ↓
+vLLM
+  ↓
+GPU
+```
+
+**Multiple GPUs/nodes using Ray:**
+
+```
+                 Ray Cluster
+                     │
+        ┌────────────┴────────────┐
+        │                         │
+    Node 1                    Node 2
+    vLLM worker               vLLM worker
+    GPU 0-7                   GPU 0-7
+        │                         │
+     8 GPUs                    8 GPUs
+```
+
+Ray helps vLLM:
+
+- Start and manage worker processes
+- Place workers on GPUs/nodes
+- Coordinate distributed execution
+- Handle communication between workers
+- Manage multi-node resources
+
+### Ray vs vLLM (and friends)
+
+They have different jobs:
+
+| Component | Job |
+|-----------|-----|
+| **vLLM** | LLM inference engine |
+| **Ray** | Distributed worker / resource orchestration |
+| **RCCL / NCCL** | GPU-to-GPU communication |
+| **CUDA / ROCm** | GPU programming / runtime |
+| **Kubernetes / Slurm** | Cluster / job scheduling |
+
+On AMD MI355X multi-node:
+
+```
+              vLLM
+                │
+             Ray
+        ┌───────┴───────┐
+        ↓               ↓
+   Node 1            Node 2
+  MI355 × 8         MI355 × 8
+        │               │
+       RCCL            RCCL
+        └───────┬───────┘
+                ↓
+          Distributed Model
+```
+
+### Why use Ray?
+
+Suppose your model doesn't fit on one node:
+
+```
+Model = 2 TB
+Node  = 8 × MI355
+          ↓
+Need multiple nodes
+```
+
+Ray coordinates vLLM workers across those nodes. You might run:
+
+```bash
+vllm serve <model> --tensor-parallel-size 16
+```
+
+with 16 GPUs distributed across multiple nodes (plus `--distributed-executor-backend ray`
+when TP/PP spans nodes — see [When is Ray required?](#when-is-ray-required) below).
+
+### Important for AMD testing
+
+Ray is **not** what provides high-speed GPU communication. The hierarchy is roughly:
+
+```
+vLLM
+ │
+ ├── Ray       → worker / process orchestration
+ │
+ └── PyTorch
+       │
+       └── RCCL → GPU communication
+                    │
+                    └── ICI / xGMI / NIC (Pensando benic* on r16)
+```
+
+If you see Ray-related overhead or failures, don't immediately assume it's an RCCL or
+network problem. Ray is primarily responsible for **launching, placing, and coordinating**
+distributed workers.
+
+### Ray vs vLLM multiprocessing
+
+Newer vLLM deployments can use vLLM's own **multiprocessing (`mp`) executor** instead of
+Ray — especially for **single-node** deployments (e.g. Kimi-K3 with `TP=8` on one MI355X).
+Ray becomes more relevant when you're doing **distributed / multi-node inference** where
+one logical engine spans nodes.
+
+---
+
 ## Slurm vs Ray: who does what?
 
 They solve **different problems**. You need both only when a **single vLLM engine**
