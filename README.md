@@ -6,6 +6,10 @@ Notes and deep-dives on LLM inference engines, kernels, and serving on AMD Insti
 
 - [AMD ATOM vs vLLM — architecture & kernels](docs/atom-vs-vllm.md) — how AMD's ATOM engine and vLLM differ in architecture and the kernel layer, and how they combine (ATOM as a vLLM plugin backend on top of AITER).
 
+### Fine-tuning / PEFT
+
+- [LoRA vs QLoRA](docs/lora-vs-qlora.md) — low-rank adapters vs 4-bit quantized base + adapters; VRAM trade-offs, knobs, and how they relate to serving on ROCm.
+
 ### Kernel / systems deep-dives
 
 - [MHA vs MLA — attention mechanisms compared](docs/mha-vs-mla.md) — full multi-head attention vs DeepSeek's latent attention, KV-cache math, and why MLA cuts cache ~57× with no quality loss.
