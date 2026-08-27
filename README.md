@@ -10,6 +10,10 @@ Notes and deep-dives on LLM inference engines, kernels, and serving on AMD Insti
 
 - [LoRA vs QLoRA](docs/lora-vs-qlora.md) — low-rank adapters vs 4-bit quantized base + adapters; VRAM trade-offs, knobs, and how they relate to serving on ROCm.
 
+### Retrieval / knowledge injection
+
+- [RAG in LLM serving](docs/rag-in-llm.md) — the retrieval pipeline and every knob (chunking, embeddings, hybrid + rerank, packing), plus what RAG does inside the model: fusion architectures, lost-in-the-middle, and why RAG is a prefill-heavy, KV-bound workload.
+
 ### Kernel / systems deep-dives
 
 - [MHA vs MLA — attention mechanisms compared](docs/mha-vs-mla.md) — full multi-head attention vs DeepSeek's latent attention, KV-cache math, and why MLA cuts cache ~57× with no quality loss.
