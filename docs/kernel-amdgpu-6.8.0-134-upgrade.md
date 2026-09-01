@@ -259,3 +259,15 @@ DKMS package vs user-facing driver:
 - RCCL K8s runbook: `network-operator/scripts/k8s-rccl.sh`
 - AINIC image tag must match `pds/1.117.5.a.77` on node: `..._ainic-1.117.5-a-77`
 - MI355X r17 OOB interface: `enp81s0f1` (not `enp81s0f0` — that is MI325X e13)
+
+---
+
+## BKC artifacts (MI355X-O)
+
+Official BKC bundle for MI350/355H — driver, firmware, and validation packages for this platform:
+
+- **BKC:** H25.17 / RC10
+- **Bundle:** `AMD_MI350_355H_01.25.17.10.76`
+- **Path:** [dcgpuval-storage — BKC_H25.17 Production & debug official bundle](http://dcgpuval-storage.amd.com/sde-validation/projects%20%28BKC,%20CRD%29/MI355X-O/bkc-artifacts/BKC_H25.17/Production_%26debug_official_bundle/RC10/AMD_MI350_355H_01.25.17.10.76/)
+
+Use this bundle as the source of truth for amdgpu/amdgpu-dkms versions when aligning nodes to **30.30.02** and kernel **6.8.0-134-generic`.
