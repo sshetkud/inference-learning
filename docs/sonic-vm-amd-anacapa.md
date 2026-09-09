@@ -14,6 +14,8 @@ Validated on **smc200x-ccs-e12-43** (`sonic-vm2`, SONIC-128 `202505_1.0.0-128`).
 | Work dir | `/etc/aifm/sonic-vm/` |
 | **Do NOT bridge** | `ens238f0` (mgmt NIC — breaks SSH) |
 | VM network | libvirt `default` (`virbr0` = `192.168.122.1`) |
+| SONiC VM IP | DHCP on `virbr0` (e.g. `192.168.122.177` — check with `virsh domifaddr`) |
+| AFM package (host) | `/etc/aifm/afm-package/` |
 | Console | `sudo virsh console <vm>` |
 | Install disk | **32 GB** NVMe qcow2 minimum (8 GB fails first boot) |
 | NIC model | **e1000** (virtio not visible in ONIE) |
@@ -144,6 +146,173 @@ sudo reboot
 
 ---
 
+## Phase 5 — AFM controller bring-up (on SONiC VM)
+
+Maps to **AFM Bring-Up wiki Steps 3–7** for a single-switch **gpu8** lab. The controller runs **inside the SONiC VM** (not on the KVM host).
+
+All `config` / `docker` / `bootstrap.py` commands below run **on SONiC** (`admin@sonic`), via console or SSH:
+
+```bash
+# From KVM host — console
+sudo virsh console sonic-vm2
+
+# Or SSH (password: YourPaSsWoRd)
+SONIC_IP=$(sudo virsh domifaddr sonic-vm2 | awk '/192\.168\.122/{print $4}' | cut -d/ -f1)
+ssh admin@${SONIC_IP}
+```
+
+### 5.0 — Stage AFM images on SONiC
+
+If images are not already under `/etc/afm/agent/afm-package/images/` (or similar), copy from the host:
+
+```bash
+# On KVM host (e12-43)
+AFM_PKG=/etc/aifm/afm-package
+SONIC_IP=$(sudo virsh domifaddr sonic-vm2 | awk '/192\.168\.122/{print $4}' | cut -d/ -f1)
+
+scp ${AFM_PKG}/images/afm_controller_container.tar admin@${SONIC_IP}:/tmp/
+scp ${AFM_PKG}/images/afm_agent_container.tar     admin@${SONIC_IP}:/tmp/   # optional, for agent
+
+# On SONiC
+sudo mkdir -p /etc/afm/agent/afm-package/images
+sudo mv /tmp/afm_controller_container.tar /etc/afm/agent/afm-package/images/
+cd /etc/afm/agent/afm-package/images
+```
+
+### 5.1 — Load & tag controller image (wiki Steps 3–4)
+
+```bash
+cd /etc/afm/agent/afm-package/images
+
+sudo docker load -i afm_controller_container.tar
+sudo docker tag pen-afm-controller:latest docker-afm-controller:latest
+sudo docker images | grep -i afm
+```
+
+### 5.2 — Controller coordinates (wiki Step 5)
+
+Set coordinates to the **SONiC switch management IP** (not the KVM host). The VM gets DHCP from `virbr0`:
+
+```bash
+# On SONiC — confirm eth0 IP
+ip -4 addr show eth0
+
+# Example: 192.168.122.177/24
+sudo config controller coordinates 192.168.122.177
+sudo config save -y
+```
+
+| IP | Role |
+|----|------|
+| `192.168.122.177` | SONiC VM (`eth0`) — use for **coordinates** and **bootstrap AFM_IP** |
+| `192.168.122.1` | KVM host (`virbr0`) — reachability only; not coordinates in this layout |
+
+> `sudo config controller coordinates …` on the **Linux host** fails with `config: command not found`. It is a **SONiC CLI** command only.
+
+### 5.3 — Start `afm-controller` (wiki Step 6)
+
+```bash
+sudo systemctl start afm-controller
+sudo docker ps | grep afm-controller
+```
+
+If `systemctl` does not create a container (`No such container: afm-controller`), start manually:
+
+```bash
+sudo docker rm -f afm-controller 2>/dev/null
+sudo docker run -d \
+  --name afm-controller \
+  --network host \
+  --privileged \
+  --restart unless-stopped \
+  -v /opt/amd/afm:/opt/amd/afm \
+  docker-afm-controller:latest
+
+# Wait for controller process (~15 s)
+sleep 15
+sudo docker logs afm-controller --tail 20
+```
+
+Expect: `afm_controller is running (PID: …)`.
+
+### 5.4 — Bootstrap cluster (wiki Step 7)
+
+Replace `<sw_mgmt_ip>` with the SONiC VM IP from step 5.2 (e.g. `192.168.122.177`).
+
+```bash
+sudo docker exec afm-controller python3 /controller_pkg/bootstrap.py \
+  -clustername aifm-cluster \
+  -password 'Pensando0$' \
+  -rack_type gpu8 \
+  -output_log bootstrap.log \
+  192.168.122.177
+```
+
+**Bootstrap is quiet for several minutes** — that is normal. Progress is written to `bootstrap.log` inside the container:
+
+```bash
+# In another SONiC session while bootstrap runs
+sudo docker exec afm-controller tail -f bootstrap.log
+```
+
+Successful completion looks like:
+
+```
+* AFM bootstrap completed successfully
+* Created pod: pod-1 Rack type: gpu8 IFCP encryption mode: disabled
+* you may access AFM at https://192.168.122.177
+```
+
+A single `409` retry (`attempt #1 received response code: 409, retrying...`) is harmless.
+
+Default UI login: **`admin`** / **`Pensando0$`**.
+
+### 5.5 — Verify controller
+
+```bash
+sudo docker ps | grep afm-controller
+curl -sk -o /dev/null -w "HTTPS:%{http_code}\n" https://192.168.122.177/
+```
+
+---
+
+## Phase 6 — AFM agent (switch)
+
+If the agent image is loaded and `afm-agent` is not already running:
+
+```bash
+cd /etc/afm/agent/afm-package/images
+sudo docker load -i afm_agent_container.tar   # if needed
+
+sudo systemctl start afm-agent
+sudo docker ps | grep afm-agent
+```
+
+Compute-node agents are deployed separately (see full **AFM Bring-Up** wiki / `deploy_afm.sh` with `[compute]` inventory).
+
+---
+
+## Phase 7 — Access AFM UI from your laptop
+
+SONiC is on the private `192.168.122.0/24` network. Tunnel HTTPS through the Conductor node:
+
+```bash
+# Terminal 1 — leave open (-N = tunnel only; blank screen is expected)
+ssh -N -L 8443:192.168.122.177:443 sshetkud@smc200x-ccs-e12-43.cs-aus.dcgpu
+```
+
+Open **https://localhost:8443** in a browser (accept the self-signed certificate).
+
+Background tunnel:
+
+```bash
+ssh -f -N -L 8443:192.168.122.177:443 sshetkud@smc200x-ccs-e12-43.cs-aus.dcgpu
+```
+
+Replace `192.168.122.177` if `virsh domifaddr` shows a different address.
+
+---
+
 ## VM XML essentials
 
 **Phase 1 (embed):** boot `cdrom` then `hd`; CD = ONIE recovery ISO.
@@ -185,6 +354,11 @@ NVMe via qemu commandline (not libvirt `bus=nvme`):
 | `sonic-installer` from ONIE | `onie-nos-install` (first install) |
 | Bridge `ens238f0` | libvirt `default` network |
 | Keep recovery ISO after embed | Remove ISO; boot HD only |
+| `config` on Linux host | `config` only on **SONiC** shell |
+| `docker load` only | Still need `systemctl start afm-controller` or `docker run` |
+| Coordinates = host `10.235.x.x` | Coordinates = **SONiC VM IP** on `virbr0` (e.g. `192.168.122.177`) |
+| Bootstrap prints nothing | Normal — tail `bootstrap.log` inside container (~3–5 min) |
+| `ssh -L` “hangs” | Expected — tunnel stays open; browse in another terminal |
 
 ---
 
@@ -204,4 +378,10 @@ Environment overrides (all scripts): `VM`, `DISK`, `BIN`, `HOST_IP`, `HTTP_PORT`
 
 ## Related wiki
 
-AMD MiniRack E2E AFM Bring-Up (Confluence) — Steps 1–5 for physical switch; this runbook adapts Step 1 for KVM with `amd_anacapa` ONIE.
+[AFM Bring-Up](https://amd.atlassian.net/wiki/spaces/DCGPUCEVAL/pages/1810969287/AFM+Bring-Up) (Confluence) — full rack procedure. This runbook covers:
+
+| Wiki scope | This doc |
+|------------|----------|
+| Physical switch / SONiC install | Phases 0–4 (KVM + `amd_anacapa` ONIE) |
+| AFM controller Steps 3–7 | Phases 5–7 (controller on SONiC VM) |
+| Multi-switch `deploy_afm.sh` | Use package inventory with `[switch]` / `[compute]` groups |
