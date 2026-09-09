@@ -62,8 +62,10 @@ sudo mkdir -p /etc/aifm/sonic-vm /var/lib/libvirt/images/sonic
 Creates a **32 GB** blank NVMe disk and boots the **ONIE recovery ISO**.
 
 ```bash
-sudo bash /path/to/recreate_sonic_vm2_32g.sh
-# Or set VM_NAME/DISK paths in script for sonic-vm1, etc.
+git clone https://github.com/sshetkud/inference-learning.git
+cd inference-learning/scripts/sonic-vm
+sudo bash recreate_sonic_vm2_32g.sh
+# Optional: VM=sonic-vm1 DISK=/var/lib/libvirt/images/sonic/sonic-vm1-disk.qcow2 sudo -E bash recreate_sonic_vm2_32g.sh
 ```
 
 ```bash
@@ -85,7 +87,7 @@ ONIE: Rebooting...
 **CD-ROM hotplug does not work** on this VM type. Stop the VM, redefine XML (HD boot only, e1000 NIC), start HTTP server, then install from ONIE.
 
 ```bash
-sudo bash /path/to/sonic-vm2-install-32g.sh
+sudo bash sonic-vm2-install-32g.sh
 ```
 
 Starts HTTP on `192.168.122.1:8081` serving `sonic-broadcom.bin`.
@@ -118,7 +120,7 @@ password: YourPaSsWoRd
 SONIC-128 ships a **custom** image password. If login fails, reset from the host:
 
 ```bash
-sudo bash /path/to/reset_sonic_admin.sh
+sudo bash reset_sonic_admin.sh
 ```
 
 Inside SONiC:
@@ -188,13 +190,15 @@ NVMe via qemu commandline (not libvirt `bus=nvme`):
 
 ## Helper scripts
 
-Copy to the host (e.g. `/tmp/`) from the Webproject repo:
+In [scripts/sonic-vm/](../scripts/sonic-vm/):
 
 | Script | Purpose |
 |--------|---------|
 | `recreate_sonic_vm2_32g.sh` | Phase 1: 32G disk + ONIE embed boot |
 | `sonic-vm2-install-32g.sh` | Phase 2: HD boot + HTTP install |
-| `reset_sonic_admin.sh` | Reset `admin` → `YourPaSsWoRd` |
+| `reset_sonic_admin.sh` | Reset `admin` → `YourPaSsWoRd` (offline disk edit) |
+
+Environment overrides (all scripts): `VM`, `DISK`, `BIN`, `HOST_IP`, `HTTP_PORT`, `PASS`.
 
 ---
 
