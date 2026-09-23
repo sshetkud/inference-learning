@@ -24,6 +24,11 @@ Notes and deep-dives on LLM inference engines, kernels, and serving on AMD Insti
 - [CUDA-graph `FULL_AND_PIECEWISE` capture](docs/cuda-graph-capture.md) — full vs piecewise HIP-graph capture, persistent metadata buffers, `torch.compile` interaction.
 - [Disaggregated prefill / decode](docs/disaggregated-prefill-decode.md) — separate GPU pools per phase, KV handoff/transfer, independent scaling & trade-offs.
 
+### Cluster orchestration
+
+- [Multi-node vLLM, Slurm, and Ray](docs/multinode-vllm-ray.md) — how Slurm, Ray, and vLLM fit together for distributed inference, plus the Kimi-K3 8-node TP×PP runbook.
+- [Multi-node RCCL on Kubernetes](docs/rccl-kubernetes-runbook.md) — validating RoCE from inside pods on MI355X + Pensando ionic: `hostNetwork` + `/dev/infiniband` beats Multus/SR-IOV, with measured busbw vs the Slurm baseline.
+
 ## TL;DR — ATOM vs vLLM
 
 ATOM and vLLM are **not** competing engines doing the same job; they live at different layers and are often used together.
