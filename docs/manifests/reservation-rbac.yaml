@@ -1,0 +1,51 @@
+# RBAC for the reservation system.
+#   reservation-admin  : full control of Reservation CRs + can taint/label nodes.
+#   reservation-viewer : read-only Reservation CRs, granted to everyone (authenticated).
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: reservation-admin
+rules:
+- apiGroups: ["lab.amd"]
+  resources: ["reservations","reservations/status"]
+  verbs: ["get","list","watch","create","update","patch","delete"]
+# needed to place/remove the enforcing taint + label on nodes
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get","list","watch","patch","update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: reservation-admin-sshetkud
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: reservation-admin
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: User
+  name: sshetkud
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: reservation-viewer
+rules:
+- apiGroups: ["lab.amd"]
+  resources: ["reservations"]
+  verbs: ["get","list","watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: reservation-viewer-all
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: reservation-viewer
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: system:authenticated

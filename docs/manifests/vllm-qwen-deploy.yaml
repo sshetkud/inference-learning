@@ -1,0 +1,95 @@
+# vLLM serve: Qwen3.5-35B-A3B (BF16 MoE, ~3B active) on 8x MI300X (gfx942)
+# Node: dell-ccs-e14-34 (reserved via reservation.lab.amd/owner=sshetkud)
+# Model is served from the cluster-wide NFS store mounted at /mnt/dcgpuval.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-qwen
+  labels:
+    app: vllm-qwen
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm-qwen
+  template:
+    metadata:
+      labels:
+        app: vllm-qwen
+    spec:
+      # --- target + tolerate the reserved node ---
+      nodeSelector:
+        reservation.lab.amd/owner: sshetkud
+      tolerations:
+      - key: reservation.lab.amd/owner
+        operator: Equal
+        value: sshetkud
+        effect: NoSchedule
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values: ["dell-ccs-e14-34"]
+      containers:
+      - name: vllm
+        image: vllm/vllm-openai-rocm:kimi-k3
+        imagePullPolicy: IfNotPresent
+        command: ["vllm","serve","/mnt/dcgpuval/models/Qwen/Qwen3.5-35B-A3B"]
+        args:
+        - --served-model-name
+        - Qwen3.5-35B-A3B
+        - -tp
+        - "8"
+        - --max-model-len
+        - "10240"
+        - --gpu-memory-utilization
+        - "0.95"
+        - --max-num-seqs
+        - "128"
+        - --trust-remote-code
+        - --host
+        - 0.0.0.0
+        - --port
+        - "8000"
+        ports:
+        - containerPort: 8000
+        resources:
+          limits:
+            amd.com/gpu: "8"
+        volumeMounts:
+        - name: model
+          mountPath: /mnt/dcgpuval
+        - name: dshm
+          mountPath: /dev/shm
+        readinessProbe:
+          httpGet:
+            path: /v1/models
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 15
+          failureThreshold: 60
+      volumes:
+      - name: model
+        hostPath:
+          path: /mnt/dcgpuval        # NFS root — model dir is a symlink, so mount the whole root
+          type: Directory
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 64Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-qwen
+spec:
+  type: ClusterIP
+  selector:
+    app: vllm-qwen
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000

@@ -1,0 +1,68 @@
+# CustomResourceDefinition that records node reservations in etcd (via the API
+# server). The CR is the "book of record" / ACL; actual scheduling enforcement is
+# done by the node taint + label (see docs/k8s-node-reservation.md).
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: reservations.lab.amd
+spec:
+  group: lab.amd
+  scope: Cluster
+  names:
+    plural: reservations
+    singular: reservation
+    kind: Reservation
+    shortNames: ["rsv"]
+  versions:
+  - name: v1
+    served: true
+    storage: true
+    subresources:
+      status: {}
+    additionalPrinterColumns:
+    - name: Owner
+      type: string
+      jsonPath: .spec.owner
+    - name: Nodes
+      type: string
+      jsonPath: .spec.nodes
+    - name: Start
+      type: string
+      jsonPath: .spec.start
+    - name: End
+      type: string
+      jsonPath: .spec.end
+    - name: Phase
+      type: string
+      jsonPath: .status.phase
+    schema:
+      openAPIV3Schema:
+        type: object
+        required: ["spec"]
+        properties:
+          spec:
+            type: object
+            required: ["owner","nodes"]
+            properties:
+              owner:
+                type: string
+                description: User who owns the reservation.
+              nodes:
+                type: array
+                items:
+                  type: string
+                description: Node names covered by this reservation.
+              start:
+                type: string
+                format: date-time
+              end:
+                type: string
+                format: date-time
+              reason:
+                type: string
+          status:
+            type: object
+            properties:
+              phase:
+                type: string
+                enum: ["Pending","Active","Expired","Released"]

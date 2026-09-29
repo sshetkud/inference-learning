@@ -1,0 +1,14 @@
+# Example Reservation CR (book-of-record). NOTE: the CR alone does NOT enforce
+# anything — you must also taint + label the real Kubernetes node(s) it covers.
+# See docs/k8s-node-reservation.md for the enforcing kubectl commands.
+apiVersion: lab.amd/v1
+kind: Reservation
+metadata:
+  name: sshetkud-dell
+spec:
+  owner: sshetkud
+  nodes:
+  - dell-ccs-e14-34
+  start: "2026-09-28T00:00:00Z"
+  end:   "2026-09-29T08:00:00Z"
+  reason: "vLLM Qwen3.5-35B-A3B serve + benchmark"

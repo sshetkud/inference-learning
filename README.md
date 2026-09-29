@@ -14,6 +14,11 @@ Notes and deep-dives on LLM inference engines, kernels, and serving on AMD Insti
 
 - [RAG in LLM serving](docs/rag-in-llm.md) — the retrieval pipeline and every knob (chunking, embeddings, hybrid + rerank, packing), plus what RAG does inside the model: fusion architectures, lost-in-the-middle, and why RAG is a prefill-heavy, KV-bound workload.
 
+### Kubernetes serving & cluster ops
+
+- [vLLM serve + benchmark on Kubernetes (Qwen3.5-35B-A3B, 8x MI300X)](docs/k8s-vllm-qwen-serve-bench.md) — end-to-end runbook: serve Deployment/Service, `vllm bench serve` concurrency sweep, results (peak 22,188 tok/s @ c128), and every issue hit (disk-pressure eviction loop, image GC re-pull, HF-401 tokenizer fix) with fixes. Manifests: [`serve`](docs/manifests/vllm-qwen-deploy.yaml), [`bench`](docs/manifests/vllm-bench-qwen.yaml).
+- [Kubernetes node reservation (taint + label + CRD/RBAC)](docs/k8s-node-reservation.md) — how a GPU node is reserved for one user: enforcing taint + targeting label + `Reservation` CRD/RBAC book-of-record. Manifests: [`crd`](docs/manifests/reservation-crd.yaml), [`rbac`](docs/manifests/reservation-rbac.yaml), [`cr`](docs/manifests/reservation-cr.yaml).
+
 ### Kernel / systems deep-dives
 
 - [MHA vs MLA — attention mechanisms compared](docs/mha-vs-mla.md) — full multi-head attention vs DeepSeek's latent attention, KV-cache math, and why MLA cuts cache ~57× with no quality loss.
@@ -23,11 +28,6 @@ Notes and deep-dives on LLM inference engines, kernels, and serving on AMD Insti
 - [`ROCM_AITER_FA` — MHA 3-path routing](docs/rocm-aiter-fa-3path.md) — batch reordering to `[decode:extend:prefill]`, per-phase kernels, LSE merge, shuffled KV cache.
 - [CUDA-graph `FULL_AND_PIECEWISE` capture](docs/cuda-graph-capture.md) — full vs piecewise HIP-graph capture, persistent metadata buffers, `torch.compile` interaction.
 - [Disaggregated prefill / decode](docs/disaggregated-prefill-decode.md) — separate GPU pools per phase, KV handoff/transfer, independent scaling & trade-offs.
-
-### Cluster orchestration
-
-- [Multi-node vLLM, Slurm, and Ray](docs/multinode-vllm-ray.md) — how Slurm, Ray, and vLLM fit together for distributed inference, plus the Kimi-K3 8-node TP×PP runbook.
-- [Multi-node RCCL on Kubernetes](docs/rccl-kubernetes-runbook.md) — validating RoCE from inside pods on MI355X + Pensando ionic: `hostNetwork` + `/dev/infiniband` beats Multus/SR-IOV, with measured busbw vs the Slurm baseline.
 
 ## TL;DR — ATOM vs vLLM
 
