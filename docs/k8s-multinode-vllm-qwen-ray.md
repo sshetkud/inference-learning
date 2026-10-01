@@ -223,15 +223,61 @@ Concurrency sweep, ISL 8192 / OSL 1024, one engine over 4× MI300X (TP=8 × PP=4
 
 ---
 
-## 6. Teardown
+## 6. Teardown & rebuild from scratch
+
+The vLLM engine runs **inside the Ray head pod**, so deleting the RayCluster
+deletes all head+worker pods, kills the engine, and frees the 32 GPUs in one step
+— there is no separate "stop vLLM" action.
+
+### Teardown
 
 ```bash
-kubectl delete -f manifests/vllm-bench-qwen-mn.yaml \
-               -f manifests/vllm-qwen-mn-svc.yaml \
-               -f manifests/raycluster-vllm-qwen-mn.yaml
+kubectl delete raycluster/vllm-qwen-mn svc/vllm-qwen-mn job/vllm-qwen-mn-bench --ignore-not-found
+# verify everything is gone (both should report NotFound / no resources):
+kubectl get raycluster vllm-qwen-mn
+kubectl get pods -l app=vllm-qwen-mn
 ```
 
----
+Deleting the `RayCluster` CR is what the KubeRay operator watches — it garbage-collects
+the head and worker pods. Delete the `Service` and bench `Job` explicitly (they are not
+owned by the RayCluster). Wait until all pods are gone before recreating, so the
+`podAntiAffinity` (one pod per node) can place the new pods.
+
+### Rebuild from scratch
+
+```bash
+# 1. recreate the cluster + service
+kubectl apply -f manifests/raycluster-vllm-qwen-mn.yaml
+kubectl get raycluster vllm-qwen-mn -w          # wait STATUS=ready
+kubectl get pods -l app=vllm-qwen-mn -o wide    # 4/4 Running, one per e14 node
+
+# 2. confirm all 32 GPUs joined the Ray cluster
+HEAD=$(kubectl get pod -l ray.io/cluster=vllm-qwen-mn,ray.io/node-type=head -o name)
+kubectl exec -it "$HEAD" -c ray-head -- ray status    # expect 32.0 GPU
+
+# 3. launch the distributed engine inside the head (detached)
+kubectl exec "$HEAD" -c ray-head -- bash -lc 'setsid bash -c "\
+  vllm serve /mnt/y_share/models/Qwen/Qwen3.5-35B-A3B \
+    --served-model-name Qwen3.5-35B-A3B -tp 8 -pp 4 --distributed-executor-backend ray \
+    --gpu-memory-utilization 0.95 --max-model-len 10240 --max-num-seqs 128 --trust-remote-code \
+    --host 0.0.0.0 --port 8000 > /tmp/vllm_serve.log 2>&1" </dev/null & echo launched'
+
+# 4. poll startup, then smoke test
+kubectl exec "$HEAD" -c ray-head -- tail -n 20 /tmp/vllm_serve.log   # wait "init engine ... took"
+kubectl exec "$HEAD" -c ray-head -- curl -s http://localhost:8000/v1/models
+```
+
+Expected timings on this fleet: pods Ready ~1 min; weight load from the
+`/mnt/y_share` NFS ~5 min; engine init/warmup ~2 min → **~7-8 min** before
+`/v1/models` answers. Two normal quirks when launching the detached engine over
+`kubectl exec`: the exec call may return after ~60 s while the engine keeps
+starting (the `setsid ... &` is detached — poll the log, don't re-launch), and
+re-running the serve while it is already up is harmless (bind to :8000 fails fast).
+
+> The [`k8s-multinode-vllm` MCP server](https://github.com/sshetkud/inference-learning)
+> wraps this exact teardown/rebuild loop as `vllm_teardown(confirm=true)` →
+> `raycluster_create(dry_run=false)` → `ray_status()` → `vllm_serve(start=true)` →
+> `vllm_models()`.
 
 ## TL;DR
 
