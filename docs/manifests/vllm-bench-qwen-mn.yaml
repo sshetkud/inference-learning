@@ -1,0 +1,71 @@
+# Benchmark Job for the multi-node vLLM engine (RayCluster vllm-qwen-mn).
+# CPU-only client pod; sweeps concurrency 16/32/64/128 at ISL 8192 / OSL 1024
+# against the Service vllm-qwen-mn:8000 (which fronts the Ray head's vLLM server).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vllm-bench-qwen-mn
+  namespace: default
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: vllm-bench-qwen-mn
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        reservation.lab.amd/owner: sshetkud
+      tolerations:
+      - key: reservation.lab.amd/owner
+        operator: Equal
+        value: sshetkud
+        effect: NoSchedule
+      containers:
+      - name: bench
+        image: vllm/vllm-openai-rocm:kimi-k3
+        imagePullPolicy: IfNotPresent
+        command: ["bash","-lc"]
+        args:
+        - |
+          set -u
+          MODEL=Qwen3.5-35B-A3B
+          URL=http://vllm-qwen-mn:8000
+          OUT=/mnt/y_share/models/bench_qwen_mn_$(date +%Y%m%d_%H%M%S)
+          mkdir -p "$OUT"
+          echo "waiting for server /v1/models ..."
+          for i in $(seq 1 240); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$URL/v1/models" || true)
+            if [ "$code" = "200" ]; then echo "server_ready after ${i} tries"; break; fi
+            sleep 5
+          done
+          for C in 16 32 64 128; do
+            N=$((C*5)); if [ "$N" -lt 64 ]; then N=64; fi
+            echo "================ concurrency=$C num_prompts=$N ================"
+            vllm bench serve \
+              --backend openai \
+              --model "$MODEL" \
+              --tokenizer /mnt/y_share/models/Qwen/Qwen3.5-35B-A3B \
+              --base-url "$URL" \
+              --endpoint /v1/completions \
+              --dataset-name random \
+              --random-input-len 8192 \
+              --random-output-len 1024 \
+              --num-prompts "$N" \
+              --max-concurrency "$C" \
+              --ignore-eos \
+              --percentile-metrics ttft,tpot,itl,e2el \
+              --save-result --result-dir "$OUT" --result-filename "c${C}.json" \
+              || echo "bench c=$C FAILED"
+          done
+          echo "================ ALL DONE ================"
+          echo "results dir: $OUT"
+          ls -la "$OUT"
+        volumeMounts:
+        - name: model
+          mountPath: /mnt/y_share
+      volumes:
+      - name: model
+        hostPath:
+          path: /mnt/y_share
+          type: Directory

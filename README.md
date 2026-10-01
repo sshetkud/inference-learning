@@ -17,6 +17,7 @@ Notes and deep-dives on LLM inference engines, kernels, and serving on AMD Insti
 ### Kubernetes serving & cluster ops
 
 - [vLLM serve + benchmark on Kubernetes (Qwen3.5-35B-A3B, 8x MI300X)](docs/k8s-vllm-qwen-serve-bench.md) — end-to-end runbook: serve Deployment/Service, `vllm bench serve` concurrency sweep, results (peak 22,188 tok/s @ c128), and every issue hit (disk-pressure eviction loop, image GC re-pull, HF-401 tokenizer fix) with fixes. Manifests: [`serve`](docs/manifests/vllm-qwen-deploy.yaml), [`bench`](docs/manifests/vllm-bench-qwen.yaml).
+- [Multi-node vLLM on Kubernetes via KubeRay (Qwen3.5-35B-A3B, 4× MI300X nodes / 32 GPU)](docs/k8s-multinode-vllm-qwen-ray.md) — one engine sharded across 4 nodes (TP=8 × PP=4) with a KubeRay `RayCluster`; serve/bench + results (3,878 tok/s @ c128) and the K8s-specific fixes (Calico → `hostNetwork`, `NCCL_IB_DISABLE=1` for cross-node PP, `/mnt/y_share` NFS staging). Manifests: [`raycluster`](docs/manifests/raycluster-vllm-qwen-mn.yaml), [`svc`](docs/manifests/vllm-qwen-mn-svc.yaml), [`bench`](docs/manifests/vllm-bench-qwen-mn.yaml).
 - [Kubernetes node reservation (taint + label + CRD/RBAC)](docs/k8s-node-reservation.md) — how a GPU node is reserved for one user: enforcing taint + targeting label + `Reservation` CRD/RBAC book-of-record. Manifests: [`crd`](docs/manifests/reservation-crd.yaml), [`rbac`](docs/manifests/reservation-rbac.yaml), [`cr`](docs/manifests/reservation-cr.yaml).
 
 ### Kernel / systems deep-dives

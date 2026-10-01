@@ -1,0 +1,197 @@
+# Multi-node vLLM (Qwen3.5-35B-A3B) on 4x dell-ccs-e14 (32x MI300X) via KubeRay.
+#
+# Topology: 1 Ray head + 3 Ray workers, one pod per reserved node, 8 GPU each = 32 GPU.
+# vLLM is NOT started by this manifest; the head container just runs `ray start`.
+# After the cluster is Ready, exec `vllm serve ... -tp 8 -pp 4 --distributed-executor-backend ray`
+# into the head pod (see README.md). vLLM then places 32 workers across the Ray cluster.
+#
+# Schema/env mirrors the working `raycluster-mega` on this operator (Ray 2.51.1).
+# RDMA on e14 nodes is Mellanox mlx5 (NCCL_IB_HCA=mlx5) over hostPath /dev/infiniband.
+# The model is staged on the shared NFS /mnt/y_share (mounted at /mnt/y_share in-pod).
+apiVersion: ray.io/v1
+kind: RayCluster
+metadata:
+  name: vllm-qwen-mn
+  namespace: default
+  labels:
+    app: vllm-qwen-mn
+spec:
+  rayVersion: "2.51.1"
+  headGroupSpec:
+    rayStartParams:
+      num-gpus: "8"
+      dashboard-host: 0.0.0.0
+    template:
+      metadata:
+        labels:
+          app: vllm-qwen-mn
+      spec:
+        # hostNetwork: the Calico pod overlay is unreliable across these e14 nodes
+        # (head<->e14-28 "No route to host"). Node IPs (10.235.x via eno8303) route
+        # reliably (same path as NFS/SSH), so Ray/vLLM use host networking.
+        hostNetwork: true
+        dnsPolicy: ClusterFirstWithHostNet
+        # Pin to the reserved e14 nodes and tolerate the reservation taint.
+        nodeSelector:
+          reservation.lab.amd/owner: sshetkud
+        tolerations:
+        - key: reservation.lab.amd/owner
+          operator: Equal
+          value: sshetkud
+          effect: NoSchedule
+        # One pod per node (host ports must not collide under hostNetwork).
+        affinity:
+          podAntiAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values: [vllm-qwen-mn]
+              topologyKey: kubernetes.io/hostname
+        securityContext:
+          supplementalGroups:
+          - 44    # video
+          - 110   # render
+        containers:
+        - name: ray-head
+          image: local/vllm-ray-qwen:kimi-k3
+          imagePullPolicy: IfNotPresent
+          env:
+          - name: RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES
+            value: "1"
+          - name: RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES
+            value: "1"
+          # RoCE OOB handshake gets crossed under hostNetwork ("wrong type 3 != 4");
+          # force consistent TCP transport over eno8303 for cross-node (PP) traffic.
+          - name: NCCL_IB_DISABLE
+            value: "1"
+          - name: NCCL_SOCKET_IFNAME
+            value: eno8303
+          - name: GLOO_SOCKET_IFNAME
+            value: eno8303
+          - name: VLLM_HOST_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.hostIP
+          - name: NCCL_DEBUG
+            value: INFO
+          - name: NCCL_DEBUG_SUBSYS
+            value: INIT,NET,GRAPH,ENV
+          # vLLM: keep tokenizer/model local; model at /mnt/y_share/models/Qwen/Qwen3.5-35B-A3B.
+          - name: HF_HUB_OFFLINE
+            value: "1"
+          resources:
+            limits:
+              amd.com/gpu: 8
+              cpu: "60"
+              memory: 400Gi
+            requests:
+              amd.com/gpu: 8
+              cpu: "32"
+              memory: 200Gi
+          securityContext:
+            privileged: true
+            capabilities:
+              add:
+              - IPC_LOCK
+          ports:
+          - { containerPort: 6379, name: gcs }
+          - { containerPort: 8265, name: dashboard }
+          - { containerPort: 10001, name: client }
+          - { containerPort: 8000, name: http }
+          volumeMounts:
+          - { mountPath: /dev/shm, name: dshm }
+          - { mountPath: /mnt/y_share, name: model }
+          - { mountPath: /dev/infiniband, name: ib }
+        volumes:
+        - name: dshm
+          emptyDir: { medium: Memory, sizeLimit: 64Gi }
+        - name: model
+          hostPath: { path: /mnt/y_share, type: Directory }
+        - name: ib
+          hostPath: { path: /dev/infiniband }
+  workerGroupSpecs:
+  - groupName: gpu-group
+    replicas: 3
+    minReplicas: 3
+    maxReplicas: 3
+    numOfHosts: 1
+    rayStartParams:
+      num-gpus: "8"
+    template:
+      metadata:
+        labels:
+          app: vllm-qwen-mn
+      spec:
+        hostNetwork: true
+        dnsPolicy: ClusterFirstWithHostNet
+        nodeSelector:
+          reservation.lab.amd/owner: sshetkud
+        tolerations:
+        - key: reservation.lab.amd/owner
+          operator: Equal
+          value: sshetkud
+          effect: NoSchedule
+        affinity:
+          podAntiAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values: [vllm-qwen-mn]
+              topologyKey: kubernetes.io/hostname
+        securityContext:
+          supplementalGroups:
+          - 44
+          - 110
+        containers:
+        - name: ray-worker
+          image: local/vllm-ray-qwen:kimi-k3
+          imagePullPolicy: IfNotPresent
+          env:
+          - name: RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES
+            value: "1"
+          - name: RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES
+            value: "1"
+          - name: NCCL_IB_DISABLE
+            value: "1"
+          - name: NCCL_SOCKET_IFNAME
+            value: eno8303
+          - name: GLOO_SOCKET_IFNAME
+            value: eno8303
+          - name: VLLM_HOST_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.hostIP
+          - name: NCCL_DEBUG
+            value: INFO
+          - name: NCCL_DEBUG_SUBSYS
+            value: INIT,NET,GRAPH,ENV
+          resources:
+            limits:
+              amd.com/gpu: 8
+              cpu: "60"
+              memory: 400Gi
+            requests:
+              amd.com/gpu: 8
+              cpu: "32"
+              memory: 200Gi
+          securityContext:
+            privileged: true
+            capabilities:
+              add:
+              - IPC_LOCK
+          volumeMounts:
+          - { mountPath: /dev/shm, name: dshm }
+          - { mountPath: /mnt/y_share, name: model }
+          - { mountPath: /dev/infiniband, name: ib }
+        volumes:
+        - name: dshm
+          emptyDir: { medium: Memory, sizeLimit: 64Gi }
+        - name: model
+          hostPath: { path: /mnt/y_share, type: Directory }
+        - name: ib
+          hostPath: { path: /dev/infiniband }
+

@@ -1,0 +1,19 @@
+# ClusterIP Service exposing the vLLM OpenAI server (port 8000) that runs on the
+# Ray HEAD pod of RayCluster/vllm-qwen-mn. The benchmark Job targets this Service.
+# Selector matches the KubeRay head pod labels.
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-qwen-mn
+  namespace: default
+  labels:
+    app: vllm-qwen-mn
+spec:
+  type: ClusterIP
+  selector:
+    ray.io/cluster: vllm-qwen-mn
+    ray.io/node-type: head
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000
