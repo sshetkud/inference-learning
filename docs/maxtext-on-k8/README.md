@@ -21,7 +21,8 @@ Nodes used for the job:
 32 GPUs total, 192 GiB HBM each. Kubernetes v1.31.14.
 
 The training manifest is [`maxtext-llama3.1-70b-k11.yaml`](maxtext-llama3.1-70b-k11.yaml).
-It is written for review. It has not been applied.
+It was applied from `smc200x-ccs-e12-35`. Worker index `2` landed in
+`Error`; the rest of the Kubeflow platform stayed healthy.
 
 ---
 
@@ -269,6 +270,124 @@ Logs are written on the NFS share at
 
 ---
 
+## Kubeflow platform services
+
+`kubectl get pods -n kubeflow` lists platform components, not GPU training
+workloads (except your MaxText Indexed Job pods). Most pods are healthy
+when `READY` shows `1/1`, `2/2`, or `3/3` and `STATUS` is `Running`.
+
+### How to read the columns
+
+| Column | Meaning |
+|---|---|
+| `READY 1/1` | One application container, no sidecar. |
+| `READY 2/2` or `3/3` | Application container plus Istio / other sidecars. |
+| `STATUS Running` | Controllers and services that stay up. |
+| `STATUS Completed` | One-shot Job finished successfully (e.g. `init-seaweedfs`). |
+| `STATUS Error` | Pod exited non-zero. Investigate; do not assume the platform is down. |
+| `RESTARTS` with age ~18h | Historical restarts from the storage bring-up. Not an active crash loop if the pod is `Running` now. |
+
+### User interface
+
+| Pod | Role |
+|---|---|
+| `centraldashboard` | Main Kubeflow dashboard. |
+| `jupyter-web-app-deployment` | Notebook UI. |
+| `katib-ui` | Hyperparameter-tuning UI. |
+| `kserve-models-web-app` | Model-serving UI. |
+| `ml-pipeline-ui` | Pipelines UI. |
+| `tensorboards-web-app-deployment` | TensorBoard UI. |
+| `volumes-web-app-deployment` | PVC management UI. |
+
+### Kubeflow Pipelines
+
+| Pod | Role |
+|---|---|
+| `ml-pipeline` | Pipeline API server. |
+| `cache-server` | Caches completed pipeline steps. |
+| `ml-pipeline-persistenceagent` | Records workflow state in the pipeline DB. |
+| `ml-pipeline-scheduledworkflow` | Launches scheduled / recurring runs. |
+| `ml-pipeline-viewer-crd` | Manages artifact viewer resources. |
+| `ml-pipeline-visualizationserver` | Renders pipeline visualizations. |
+| `workflow-controller` | Argo Workflow controller that runs pipeline tasks. |
+| `kubeflow-pipelines-profile-controller` | Configures pipeline access for Kubeflow profiles. |
+
+### Pipeline storage and metadata
+
+| Pod | Role |
+|---|---|
+| `mysql` | Kubeflow Pipelines database. |
+| `seaweedfs` | S3-compatible artifact store (replaced the deleted MinIO image). |
+| `init-seaweedfs` | One-time SeaweedFS setup Job; `Completed` is expected. |
+| `metadata-grpc-deployment` | ML Metadata gRPC server. |
+| `metadata-envoy-deployment` | Proxy in front of the metadata service. |
+| `metadata-writer` | Writes pipeline execution metadata. |
+
+### Katib
+
+| Pod | Role |
+|---|---|
+| `katib-controller` | Manages experiments, trials, and suggestions. |
+| `katib-db-manager` | Katib database API. |
+| `katib-mysql` | Katib database. |
+| `katib-ui` | Katib web interface. |
+
+### Notebooks and profiles
+
+| Pod | Role |
+|---|---|
+| `notebook-controller-deployment` | Manages Kubeflow Notebook CRs. |
+| `profiles-deployment` | Creates namespaces and access rules for users. |
+| `admission-webhook-deployment` | Validates / mutates resources (including PodDefaults). |
+| `pvcviewer-controller-manager` | Launches viewers for PVC contents. |
+
+### Training and serving
+
+| Pod | Role |
+|---|---|
+| `training-operator` | Manages JAXJob, PyTorchJob, MPIJob, and similar CRs. |
+| `kserve-controller-manager` | Manages KServe InferenceServices. |
+| `kserve-localmodel-controller-manager` | Manages locally cached serving models. |
+| `spark-operator-controller` | Manages Spark applications. |
+| `spark-operator-webhook` | Validates / mutates Spark resources. |
+| `tensorboard-controller-deployment` | Manages TensorBoard resources. |
+
+### Supporting controller
+
+| Pod | Role |
+|---|---|
+| `metacontroller-0` | Framework used by Kubeflow controllers to reconcile custom resources. |
+
+### MaxText worker (not a platform pod)
+
+```text
+maxtext-llama31-70b-k11-2-zdkkz   0/1   Error
+```
+
+This is worker index `2` from the four-node Indexed Job in step 12. It is
+not a Kubeflow platform component. Inspect without deleting the Job:
+
+```bash
+kubectl -n kubeflow get job maxtext-llama31-70b-k11
+kubectl -n kubeflow get pods -l job-name=maxtext-llama31-70b-k11 -o wide
+kubectl -n kubeflow logs maxtext-llama31-70b-k11-2-zdkkz
+kubectl -n kubeflow describe pod maxtext-llama31-70b-k11-2-zdkkz
+```
+
+Harness logs on the NFS share:
+
+```text
+/mnt/dcgpuval/afde/maxtext-slurm/outputs/
+```
+
+Delete only when you intentionally want to cancel or clean up:
+
+```bash
+kubectl -n kubeflow delete job maxtext-llama31-70b-k11
+```
+
+---
+
 ## What was verified
 
 - NFS provisioner `1/1 Running`, StorageClass `nfs-client` default.
@@ -276,6 +395,6 @@ Logs are written on the NFS share at
 - SeaweedFS `2/2 Running`, `init-seaweedfs` Complete, MinIO scaled to 0.
 - `ml-pipeline` `2/2 Running`; health check returned `multi_user: true`.
 - `metadata-grpc` and `notebook-controller` `2/2 Running` on k11 nodes.
-- Every pod and deployment in `kubeflow` was ready after step 10.
-
-The MaxText Job has not been submitted.
+- Platform pods in `kubeflow` were `Running` / `Completed` after step 10.
+- MaxText Indexed Job was applied; worker `maxtext-llama31-70b-k11-2-zdkkz`
+  is `Error` (training workload, not a platform failure).
