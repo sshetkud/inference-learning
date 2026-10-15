@@ -398,16 +398,55 @@ kubectl -n kubeflow delete job maxtext-llama31-70b-k11
 - Platform pods in `kubeflow` were `Running` / `Completed` after step 10.
 - MaxText Indexed Job was applied; worker `maxtext-llama31-70b-k11-2-zdkkz`
   is `Error` (training workload, not a platform failure).
+- **MaxText Llama 3.1 70B on r16 succeeded** on
+  `smci355-ccs-aus-r16-{06,18,26,30}` (4× MI355X, ionic). See
+  [`maxtext-llama3.1-70b-r16.yaml`](maxtext-llama3.1-70b-r16.yaml).
 
-## MaxText Llama 3.1 70B on r16 (4x MI355X)
+---
 
-Working Indexed Job manifest (nodes `r16-{06,18,26,30}`, no control-plane):
+## 13. MaxText Llama 3.1 70B on r16 (4× MI355X) — succeeded
 
-- [`maxtext-llama3.1-70b-r16.yaml`](maxtext-llama3.1-70b-r16.yaml)
+Successful Indexed Job on four **MI355X (gfx950)** nodes with ionic RDMA.
+Control plane `r16-10` was **excluded** (slow start caused JAX
+`RegisterTask` / `DEADLINE_EXCEEDED`). `r16-22` was skipped (stale Ray
+worker holding GPUs).
+
+| Node | GPUs | Role |
+|---|---|---|
+| `smci355-ccs-aus-r16-06` | 8 | worker |
+| `smci355-ccs-aus-r16-18` | 8 | worker |
+| `smci355-ccs-aus-r16-26` | 8 | worker |
+| `smci355-ccs-aus-r16-30` | 8 | worker |
+
+32 GPUs total, 288 GiB HBM each. Manifest:
+[`maxtext-llama3.1-70b-r16.yaml`](maxtext-llama3.1-70b-r16.yaml).
+Per-pod entry: [`_k8s_job.sh`](_k8s_job.sh).
+
+| Setting | Value |
+|---|---|
+| Model | `llama3.1-70b:70b:r16` (short alias keeps log names under 255 B) |
+| `per_device_batch_size` | 5 |
+| `max_target_length` | 8192 |
+| `dcn_fsdp_parallelism` | 4 |
+| `ici_fsdp_parallelism` | 8 (from `llama3.1-70b.gpu.yml`) |
+| `dataset_type` | synthetic |
+| steps | 15 |
+| Env | `JAX_USE_SHARDY_PARTITIONER=0`, `RCCL_WARP_SPEED_AUTO=0` |
+| Image | `rocm/jax-training:maxtext-v26.3` |
+| PVC | `kubeflow/maxtext-harness` → NFS `/dcgpuval/afde/maxtext-slurm` |
 
 ```bash
 export KUBECONFIG=/etc/kubernetes/kubeconfig-shared
 kubectl -n kubeflow delete job maxtext-llama31-70b-r16 --ignore-not-found --wait=true
+rm -rf /mnt/dcgpuval/afde/maxtext-slurm/outputs/k8s-r16-70b-r16/.coord
+mkdir -p /mnt/dcgpuval/afde/maxtext-slurm/outputs/k8s-r16-70b-r16/.coord
 kubectl apply -f maxtext-llama3.1-70b-r16.yaml
 kubectl -n kubeflow get pods -l job-name=maxtext-llama31-70b-r16 -o wide -w
+kubectl -n kubeflow logs -l job-name=maxtext-llama31-70b-r16 -f --prefix
 ```
+
+Logs land under `/mnt/dcgpuval/afde/maxtext-slurm/outputs/k8s-r16-*`.
+
+**Lessons from failed attempts:** keep `JOB_NAME` / passthrough short (255 B
+path limit); wait for image pull on every node before expecting JAX init;
+do not pin training pods on the Kubernetes control-plane node.
