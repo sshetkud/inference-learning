@@ -1,0 +1,117 @@
+# Llama 3.1 70B MaxText — 4x MI355X (gfx950), ionic RDMA
+# Working node set (no control-plane): smci355-ccs-aus-r16-{06,18,26,30}
+#
+# Apply from smc200x-ccs-e12-35 (or any host with kubeconfig-shared):
+#   export KUBECONFIG=/etc/kubernetes/kubeconfig-shared
+#   kubectl -n kubeflow delete job maxtext-llama31-70b-r16 --ignore-not-found --wait=true
+#   rm -rf /mnt/dcgpuval/afde/maxtext-slurm/outputs/k8s-r16-70b-r16/.coord
+#   mkdir -p /mnt/dcgpuval/afde/maxtext-slurm/outputs/k8s-r16-70b-r16/.coord
+#   kubectl apply -f maxtext-llama3.1-70b-r16.yaml
+#   kubectl -n kubeflow get pods -l job-name=maxtext-llama31-70b-r16 -o wide -w
+#   kubectl -n kubeflow logs -l job-name=maxtext-llama31-70b-r16 -f --prefix
+#
+# Logs: /mnt/dcgpuval/afde/maxtext-slurm/outputs/k8s-r16-*
+#
+# Notes:
+# - Requires PVC kubeflow/maxtext-harness (NFS -> /dcgpuval/afde/maxtext-slurm).
+# - Image rocm/jax-training:maxtext-v26.3 must be present or will pull (~18GB).
+# - Do not include r16-10 (Kubernetes control-plane); slow start caused JAX RegisterTask timeouts.
+# - r16-22 often has GPUs held by stale Ray workers.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: maxtext-llama31-70b-r16
+  namespace: kubeflow
+  labels:
+    app: maxtext-training
+    model: llama3.1-70b
+    rack: r16
+spec:
+  completionMode: Indexed
+  completions: 4
+  parallelism: 4
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: maxtext-training
+        job-name: maxtext-llama31-70b-r16
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      restartPolicy: Never
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - smci355-ccs-aus-r16-06
+                      - smci355-ccs-aus-r16-18
+                      - smci355-ccs-aus-r16-26
+                      - smci355-ccs-aus-r16-30
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  job-name: maxtext-llama31-70b-r16
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: training
+          image: rocm/jax-training:maxtext-v26.3
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              # Short alias keeps JOB_NAME / log path under 255 bytes.
+              # Batch/seq sized for MI355X 288GiB; RCCL_WARP_SPEED_AUTO=0 for gfx950.
+              exec /mnt/dcgpuval/afde/maxtext-slurm/_k8s_job.sh llama3.1-70b:70b:r16 -- \
+                steps=15 \
+                per_device_batch_size=5 \
+                max_target_length=8192 \
+                dcn_data_parallelism=1 \
+                dcn_fsdp_parallelism=4 \
+                enable_checkpointing=False \
+                _env_JAX_USE_SHARDY_PARTITIONER=0 \
+                _env_RCCL_WARP_SPEED_AUTO=0
+          env:
+            - name: JOB_ID
+              value: "k8s-r16"
+            - name: JOB_NAME
+              value: "70b-r16"
+            - name: NNODES
+              value: "4"
+            - name: JAX_COORDINATOR_PORT
+              value: "29500"
+            - name: K8S_BARRIER_TIMEOUT
+              value: "600"
+            - name: JOB_WORKSPACE
+              value: "/mnt/dcgpuval/afde/maxtext-slurm/outputs"
+            - name: COORD_DIR
+              value: "/mnt/dcgpuval/afde/maxtext-slurm/outputs/k8s-r16-70b-r16/.coord"
+            - name: MAXTEXT_SLURM_DIR
+              value: "/mnt/dcgpuval/afde/maxtext-slurm"
+          securityContext:
+            privileged: true
+          resources:
+            limits:
+              amd.com/gpu: "8"
+            requests:
+              amd.com/gpu: "8"
+          volumeMounts:
+            - name: harness
+              mountPath: /mnt/dcgpuval/afde/maxtext-slurm
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: harness
+          persistentVolumeClaim:
+            claimName: maxtext-harness
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Gi

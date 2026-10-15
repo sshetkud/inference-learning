@@ -398,3 +398,16 @@ kubectl -n kubeflow delete job maxtext-llama31-70b-k11
 - Platform pods in `kubeflow` were `Running` / `Completed` after step 10.
 - MaxText Indexed Job was applied; worker `maxtext-llama31-70b-k11-2-zdkkz`
   is `Error` (training workload, not a platform failure).
+
+## MaxText Llama 3.1 70B on r16 (4x MI355X)
+
+Working Indexed Job manifest (nodes `r16-{06,18,26,30}`, no control-plane):
+
+- [`maxtext-llama3.1-70b-r16.yaml`](maxtext-llama3.1-70b-r16.yaml)
+
+```bash
+export KUBECONFIG=/etc/kubernetes/kubeconfig-shared
+kubectl -n kubeflow delete job maxtext-llama31-70b-r16 --ignore-not-found --wait=true
+kubectl apply -f maxtext-llama3.1-70b-r16.yaml
+kubectl -n kubeflow get pods -l job-name=maxtext-llama31-70b-r16 -o wide -w
+```
