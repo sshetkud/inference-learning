@@ -20,6 +20,10 @@ Notes and deep-dives on LLM inference engines, kernels, and serving on AMD Insti
 - [Multi-node vLLM on Kubernetes via KubeRay (Qwen3.5-35B-A3B, 4× MI300X nodes / 32 GPU)](docs/k8s-multinode-vllm-qwen-ray.md) — one engine sharded across 4 nodes (TP=8 × PP=4) with a KubeRay `RayCluster`; serve/bench + results (3,878 tok/s @ c128) and the K8s-specific fixes (Calico → `hostNetwork`, `NCCL_IB_DISABLE=1` for cross-node PP, `/mnt/y_share` NFS staging). Manifests: [`raycluster`](docs/manifests/raycluster-vllm-qwen-mn.yaml), [`svc`](docs/manifests/vllm-qwen-mn-svc.yaml), [`bench`](docs/manifests/vllm-bench-qwen-mn.yaml).
 - [Kubernetes node reservation (taint + label + CRD/RBAC)](docs/k8s-node-reservation.md) — how a GPU node is reserved for one user: enforcing taint + targeting label + `Reservation` CRD/RBAC book-of-record. Manifests: [`crd`](docs/manifests/reservation-crd.yaml), [`rbac`](docs/manifests/reservation-rbac.yaml), [`cr`](docs/manifests/reservation-cr.yaml).
 
+### Training on Kubernetes
+
+- [MaxText Llama 3.1 70B on Kubernetes (4× MI300X, Kubeflow)](docs/maxtext-on-k8/README.md) — Kubeflow 1.10.1 bring-up on the lab cluster: join four `dell300x-ccs-aus-k11` nodes, NFS StorageClass, SeaweedFS in place of the deleted MinIO image, pipeline health, and the Indexed Job for Llama 3.1 70B (batch 1, sequence 2048, `ici_fsdp=8`, `dcn_fsdp=4`). Manifest: [`maxtext-llama3.1-70b-k11.yaml`](docs/maxtext-on-k8/maxtext-llama3.1-70b-k11.yaml). The job has not been applied.
+
 ### Kernel / systems deep-dives
 
 - [MHA vs MLA — attention mechanisms compared](docs/mha-vs-mla.md) — full multi-head attention vs DeepSeek's latent attention, KV-cache math, and why MLA cuts cache ~57× with no quality loss.
