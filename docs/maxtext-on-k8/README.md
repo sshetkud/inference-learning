@@ -270,13 +270,19 @@ Logs are written on the NFS share at
 
 ---
 
-## Kubeflow platform services
+## Kubeflow platform components (for MaxText on MI355X)
 
-`kubectl get pods -n kubeflow` lists platform components, not GPU training
-workloads (except your MaxText Indexed Job pods). Most pods are healthy
-when `READY` shows `1/1`, `2/2`, or `3/3` and `STATUS` is `Running`.
+Kubeflow is a collection of components for building and operating
+machine-learning workflows on Kubernetes. The platform includes a web
+interface, training orchestration, experiment tuning, model serving,
+notebooks, and pipelines. You install the components you need; you do not
+have to use all of them.
 
-### How to read the columns
+For this AMD MI355X cluster running MaxText, here is what each component
+does. `kubectl get pods -n kubeflow` lists these platform pods (plus your
+MaxText Indexed Job workers when a job is running).
+
+### How to read pod status
 
 | Column | Meaning |
 |---|---|
@@ -285,105 +291,144 @@ when `READY` shows `1/1`, `2/2`, or `3/3` and `STATUS` is `Running`.
 | `STATUS Running` | Controllers and services that stay up. |
 | `STATUS Completed` | One-shot Job finished successfully (e.g. `init-seaweedfs`). |
 | `STATUS Error` | Pod exited non-zero. Investigate; do not assume the platform is down. |
-| `RESTARTS` with age ~18h | Historical restarts from the storage bring-up. Not an active crash loop if the pod is `Running` now. |
 
-### User interface
+### 1. Kubeflow Dashboard (UI)
 
-| Pod | Role |
+**User interface.** The web portal for accessing Kubeflow services such as
+notebooks, pipelines, and experiments. It provides a convenient interface,
+but it does **not** execute MaxText training itself.
+
+| Your pod | Role |
 |---|---|
-| `centraldashboard` | Main Kubeflow dashboard. |
-| `jupyter-web-app-deployment` | Notebook UI. |
-| `katib-ui` | Hyperparameter-tuning UI. |
-| `kserve-models-web-app` | Model-serving UI. |
-| `ml-pipeline-ui` | Pipelines UI. |
-| `tensorboards-web-app-deployment` | TensorBoard UI. |
-| `volumes-web-app-deployment` | PVC management UI. |
+| `centraldashboard` | Main Kubeflow dashboard |
 
-### Kubeflow Pipelines
+### 2. Kubeflow Pipelines
 
-| Pod | Role |
+**Workflow automation.** Connects multiple steps into an automated workflow,
+with dependencies, artifacts, and execution tracking.
+
+Example: prepare data → run MaxText training → evaluate model → save results.
+
+| Your pods | Role |
 |---|---|
-| `ml-pipeline` | Pipeline API server. |
-| `cache-server` | Caches completed pipeline steps. |
-| `ml-pipeline-persistenceagent` | Records workflow state in the pipeline DB. |
-| `ml-pipeline-scheduledworkflow` | Launches scheduled / recurring runs. |
-| `ml-pipeline-viewer-crd` | Manages artifact viewer resources. |
-| `ml-pipeline-visualizationserver` | Renders pipeline visualizations. |
-| `workflow-controller` | Argo Workflow controller that runs pipeline tasks. |
-| `kubeflow-pipelines-profile-controller` | Configures pipeline access for Kubeflow profiles. |
+| `ml-pipeline` | Pipeline API server |
+| `ml-pipeline-ui` | Pipelines UI |
+| `ml-pipeline-persistenceagent` | Records workflow state |
+| `ml-pipeline-scheduledworkflow` | Scheduled / recurring runs |
+| `ml-pipeline-viewer-crd` | Artifact viewers |
+| `ml-pipeline-visualizationserver` | Pipeline visualizations |
+| `cache-server` | Caches completed pipeline steps |
+| `workflow-controller` | Argo Workflow controller |
+| `kubeflow-pipelines-profile-controller` | Per-profile pipeline access |
+| `mysql` / `seaweedfs` / `metadata-*` | Pipeline DB, artifacts, ML Metadata |
 
-### Pipeline storage and metadata
+### 3. Katib
 
-| Pod | Role |
+**Experiment optimization.** Automates hyperparameter tuning by running
+experiments with different configurations and comparing results.
+
+For MaxText, it could explore batch size, learning rate, or parallelism
+settings, if you define an appropriate objective and search space.
+
+| Your pods | Role |
 |---|---|
-| `mysql` | Kubeflow Pipelines database. |
-| `seaweedfs` | S3-compatible artifact store (replaced the deleted MinIO image). |
-| `init-seaweedfs` | One-time SeaweedFS setup Job; `Completed` is expected. |
-| `metadata-grpc-deployment` | ML Metadata gRPC server. |
-| `metadata-envoy-deployment` | Proxy in front of the metadata service. |
-| `metadata-writer` | Writes pipeline execution metadata. |
+| `katib-controller` | Experiments / trials |
+| `katib-ui` | Katib web UI |
+| `katib-db-manager` | Katib DB API |
+| `katib-mysql` | Katib database |
 
-### Katib
+### 4. KServe
 
-| Pod | Role |
+**Model inference.** Deploys trained models as inference services with
+endpoints for applications. It can support scaling and serving workflows
+depending on the configured runtime.
+
+After training, you could deploy a model for inference. KServe does **not**
+train MaxText models.
+
+| Your pods | Role |
 |---|---|
-| `katib-controller` | Manages experiments, trials, and suggestions. |
-| `katib-db-manager` | Katib database API. |
-| `katib-mysql` | Katib database. |
-| `katib-ui` | Katib web interface. |
+| `kserve-controller-manager` | InferenceServices |
+| `kserve-localmodel-controller-manager` | Local model cache |
+| `kserve-models-web-app` | Model-serving UI |
 
-### Notebooks and profiles
+### 5. Notebooks
 
-| Pod | Role |
+Interactive development environments for writing Python, testing JAX code,
+inspecting datasets, and experimenting before launching larger GPU jobs.
+
+| Your pods | Role |
 |---|---|
-| `notebook-controller-deployment` | Manages Kubeflow Notebook CRs. |
-| `profiles-deployment` | Creates namespaces and access rules for users. |
-| `admission-webhook-deployment` | Validates / mutates resources (including PodDefaults). |
-| `pvcviewer-controller-manager` | Launches viewers for PVC contents. |
+| `jupyter-web-app-deployment` | Notebook UI |
+| `notebook-controller-deployment` | Manages Notebook CRs |
 
-### Training and serving
+### 6. TensorBoard
 
-| Pod | Role |
+Visualizes training metrics such as loss, learning rate, throughput, and
+other logged values. Useful for comparing runs if your MaxText workflow
+exports compatible data.
+
+| Your pods | Role |
 |---|---|
-| `training-operator` | Manages JAXJob, PyTorchJob, MPIJob, and similar CRs. |
-| `kserve-controller-manager` | Manages KServe InferenceServices. |
-| `kserve-localmodel-controller-manager` | Manages locally cached serving models. |
-| `spark-operator-controller` | Manages Spark applications. |
-| `spark-operator-webhook` | Validates / mutates Spark resources. |
-| `tensorboard-controller-deployment` | Manages TensorBoard resources. |
+| `tensorboard-controller-deployment` | TensorBoard CRs |
+| `tensorboards-web-app-deployment` | TensorBoard UI |
 
-### Supporting controller
+### How these components fit into the MaxText workflow
 
-| Pod | Role |
+```text
+Dashboard / UI          →  User submits or monitors work
+        │
+Pipelines or training   →  Orchestrates jobs and workflow steps
+        │
+Kubernetes              →  Schedules worker pods onto GPU nodes
+        │
+MaxText + JAX + ROCm    →  Executes distributed training on AMD GPUs
+
+Katib                   →  Tune configurations (optional)
+TensorBoard             →  View training metrics (optional)
+Storage / metadata      →  Keep artifacts and run data
+KServe                  →  Serve the trained model (optional)
+```
+
+### Which components matter for this work?
+
+| Your goal | Relevant components |
 |---|---|
-| `metacontroller-0` | Framework used by Kubeflow controllers to reconcile custom resources. |
+| Run MaxText training | Kubernetes plus a suitable Job or distributed-training controller (`batch/v1` Indexed Job in this lab) |
+| Automate training and evaluation | Kubeflow Pipelines |
+| Tune MaxText parameters | Katib, if configured for your workload |
+| Monitor loss and training metrics | TensorBoard and your metrics stack |
+| Develop and test JAX code interactively | Notebooks |
+| Serve a trained model | KServe |
+| Provide a central web portal | Dashboard |
+
+**Bottom line:** For this MI355X validation workload, Kubeflow’s main value is
+coordinating and managing the ML lifecycle. The UI, Katib, KServe, notebooks,
+and TensorBoard are separate capabilities — not all prerequisites for running
+MaxText. The exact minimum installation depends on which component submits and
+manages your training jobs. This lab path uses a plain Kubernetes Indexed Job;
+platform pods listed above are **not** required for the training run itself
+(see the successful r16 job in §13).
 
 ### MaxText worker (not a platform pod)
 
 ```text
 maxtext-llama31-70b-k11-2-zdkkz   0/1   Error
+maxtext-llama31-70b-r16-<index>-xxxxx   Completed   # successful r16 workers
 ```
 
-This is worker index `2` from the four-node Indexed Job in step 12. It is
-not a Kubeflow platform component. Inspect without deleting the Job:
+Training workers are separate from platform components. Inspect without
+deleting the Job:
 
 ```bash
-kubectl -n kubeflow get job maxtext-llama31-70b-k11
-kubectl -n kubeflow get pods -l job-name=maxtext-llama31-70b-k11 -o wide
-kubectl -n kubeflow logs maxtext-llama31-70b-k11-2-zdkkz
-kubectl -n kubeflow describe pod maxtext-llama31-70b-k11-2-zdkkz
+kubectl -n kubeflow get pods -l job-name=maxtext-llama31-70b-r16 -o wide
+kubectl -n kubeflow logs -l job-name=maxtext-llama31-70b-r16 -f --prefix
 ```
 
 Harness logs on the NFS share:
 
 ```text
 /mnt/dcgpuval/afde/maxtext-slurm/outputs/
-```
-
-Delete only when you intentionally want to cancel or clean up:
-
-```bash
-kubectl -n kubeflow delete job maxtext-llama31-70b-k11
 ```
 
 ---
