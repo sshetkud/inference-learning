@@ -6,6 +6,10 @@ Notes and deep-dives on LLM inference engines, kernels, and serving on AMD Insti
 
 - [AMD ATOM vs vLLM — architecture & kernels](docs/atom-vs-vllm.md) — how AMD's ATOM engine and vLLM differ in architecture and the kernel layer, and how they combine (ATOM as a vLLM plugin backend on top of AITER).
 
+### AMD InferA
+
+- [InferA SGLang, two workers on one node (Qwen3-0.6B)](docs/amd-infera-sglang-two-workers.md) — bring-up on `smci355-ccs-aus-r16-10`: SGLang starts, registration into the Kubernetes etcd on `:2379` fails (mTLS), a private etcd on `:2479` registers both workers, and worker 1 has no KV record because both bind `5557`/`8801`.
+
 ### Fine-tuning / PEFT
 
 - [LoRA vs QLoRA](docs/lora-vs-qlora.md) — low-rank adapters vs 4-bit quantized base + adapters; VRAM trade-offs, knobs, and how they relate to serving on ROCm.
